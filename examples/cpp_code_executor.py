@@ -22,8 +22,8 @@ if __name__ == "__main__":
         "cpu_period": 1000000,
     }
     with CPPCodeExecutor(
-            docker_image="cpp_image:v1",
-            user="partho",
+            docker_image="cpp11:v1",
+            user="sandbox",
             src="/Users/parthokr/Documents/Projects/python-packages/base-code-executor/data/submission12",
             constraints=constraints,
             working_dir_in_container="/app",

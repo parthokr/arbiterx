@@ -2,6 +2,7 @@ import json
 import os
 
 from rich import print_json
+
 from arbiter import CodeExecutor, Constraints
 
 
@@ -24,12 +25,11 @@ if __name__ == "__main__":
     }
     WORK_DIR = "/Users/parthokr/Documents/Projects/python-packages/base-code-executor/"
     with PythonCodeExecutor(
-            docker_image="cpp_image:v1",
-            user="partho",
+            user="sandbox",
+            docker_image="python312:v1",
             src=os.path.join(WORK_DIR, "data/submission"),
             constraints=constraints,
             disable_compile=True,
     ) as executor:
         for result in executor.run():
             print_json(json.dumps(result), indent=4)
-
