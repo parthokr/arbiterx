@@ -1,5 +1,5 @@
 [project]
-name = "arbiter"
+name = "arbiterx"
 version = "0.1.0"
 description = ""
 authors = [
@@ -12,7 +12,7 @@ dependencies = [
 ]
 
 [tool.poetry]
-packages = [{include = "arbiter", from = "src"}]
+packages = [{include = "arbiterx", from = "src"}]
 
 
 [build-system]
