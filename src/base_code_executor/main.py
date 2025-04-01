@@ -1,86 +1,71 @@
-import logging
 import os
+import random
 import subprocess
 import uuid
 from abc import ABC, abstractmethod
-from typing import Optional, TypedDict, Iterator
+from collections import deque
+from typing import Optional, Iterator
 
 from rich.console import Console
-from rich.logging import RichHandler
 from rich.syntax import Syntax
 
-
-class Constraints(TypedDict):
-    time_limit: int  # in seconds
-    memory_limit: int  # in MB
-    memory_swap_limit: int  # in MB
-    cpu_quota: int  # cgroup v2 compatible
-    cpu_period: int  # cgroup v2 compatible
-
-
-def setup_logger(name: str, level: str, log_file: Optional[str] = None):
-    """Set up a logger with optional file logging and rich console output."""
-
-    logger = logging.getLogger(name)
-
-    # Convert string level to logging level (e.g., "DEBUG" → logging.DEBUG)
-    log_level = getattr(logging, level.upper(), logging.INFO)
-    logger.setLevel(log_level)
-
-    # Formatter for file logs (plain text)
-    file_formatter = logging.Formatter(
-        "%(asctime)s - %(name)s - %(levelname)s - %(filename)s:%(lineno)d - %(message)s"
-    )
-
-    # Rich handler for beautiful console logs
-    console_handler = RichHandler(rich_tracebacks=True,
-                                  show_time=True,
-                                  show_level=True,
-                                  show_path=True)
-    console_handler.setLevel(log_level)
-
-    logger.addHandler(console_handler)
-
-    if log_file:
-        file_handler = logging.FileHandler(log_file)
-        file_handler.setLevel(log_level)
-        file_handler.setFormatter(file_formatter)
-        logger.addHandler(file_handler)
-
-    return logger
+from base_code_executor.exceptions import (CMDError, DockerDaemonError,
+                                           ContainerCreateError, ContainerCleanupError,
+                                           CgroupMountError, CgroupCreateError,
+                                           CgroupCleanupError, CgroupControllerError,
+                                           CgroupSubtreeControlError,
+                                           CgroupSubtreeControlWriteError,
+                                           CgroupSetLimitsError, CompileError,
+                                           TestQueueInitializationError,
+                                           MemoryPeakReadError, MemoryEventsReadError,
+                                           CPUStatReadError, PIDSPeakReadError,
+                                           ActualOutputCleanupError, EarlyExitError)
+from base_code_executor.logger import setup_logger
+from base_code_executor.types import Constraints, TestResult
+from base_code_executor.types import MemoryEvents, CPUStat, Stats
+from base_code_executor.verdicts import Verdict
 
 
 class BaseCodeExecutor(ABC):
     def __init__(
             self,
             docker_image: str,
-            user: str,
-            non_root_user: str,
             src: str,
             constraints: Constraints,
             working_dir_in_container: str,
+            user: str = "nobody",
+            cgroup_mount_path: str = "/sys/fs/cgroup",
             container_name: Optional[str] = uuid.uuid4().hex,
             disable_compile: bool = False,
             lazy_container: bool = False,
-            early_exit: bool = False,
             dry_run: bool = False,
     ):
         """
         Base class for code execution
 
-
-        :param docker_image: Docker image to use for running the code
-        :param user: Root user in the container to create and manage the cgroups
-        :param non_root_user: Non-root user in the container to compile and run the code
-        :param src: Source code directory. Expected to have a source file, input and output directories
-        :param constraints: Constraints for the code execution (time, memory, etc.)
-        :param working_dir_in_container: Working directory in the container where the code will be copied, compiled and run
-        :param container_name: Name of the container. This will be auto-generated if not provided (default: uuid).
-        :param disable_compile: Disable compilation of the code. Useful when the code is already compiled or interpreted.
-        :param lazy_container: If True, the container will not be created immediately. It will be created when the first test is run.
-        :param early_exit: If True, tests will stop as soon as one of the tests fails.
-        :param dry_run: If True, the commands will be printed instead of running them.
+        Args:
+            docker_image (str): Docker image to use for running the code
+            src (str): Source code directory. Expected to have a source file,
+                        input and output directories.
+            constraints (Constraints): Constraints for the code execution.
+            working_dir_in_container (str): Working directory in the container.
+            user (str, optional): Non-root user in the container to compile and
+                                    run the code. Defaults to "nobody".
+            cgroup_mount_path (str, optional): Path to mount the cgroup in the
+                                                container. Defaults to "/sys/fs/cgroup".
+            container_name (Optional[str], optional): Name of the container.
+                                                        Defaults to uuid.
+            disable_compile (bool, optional): Disable compilation of the code.
+                                                Defaults to False.
+            lazy_container (bool, optional): If True, the container will not be
+                                                created immediately. It will be created
+                                                when the first test is run.
+                                                Defaults to False.
+            dry_run (bool, optional): If True, the commands will be printed instead of
+                                        running them.
         """
+        self.id = uuid.uuid4().hex  # Unique identifier for cgroup
+
         self.dry_run = dry_run
         self.console = Console()
 
@@ -96,48 +81,50 @@ class BaseCodeExecutor(ABC):
 
         self.docker_image = docker_image
         self.user = user
-        self.non_root_user = non_root_user
         self.src = src
         self.constraints = constraints
         self.working_dir_in_container = working_dir_in_container
+        self.cgroup_mount_path = cgroup_mount_path
         self.container_name = container_name
         self.disable_compile = disable_compile
         self.lazy_container = lazy_container
         self.container_id: Optional[str] = None
-        self.early_exit = early_exit
 
         self._is_compiled: bool = False
 
-        if not self.lazy_container:
-            self._create_container()
-
     @staticmethod
     def format_cmd(cmd: list[str], debug: bool = False) -> str:
-        """
-        Format a command list to a string.
-        If debug is True, the command will be returned as a string without escaping.
+        """Formats a command list to a string for logging/display.
 
-        :param cmd: Command as a list
-        :param debug: If True, return the command as a string without escaping
-        :return: Formatted command as a string
+        Args:
+            cmd: Command as a list of strings.
+            debug: If True, the command is returned as a string without escaping.
+
+        Returns:
+            Formatted command as a string.
         """
         if debug:
             return " ".join(cmd)
         return " \\\n    ".join(cmd)
 
     def _check_docker_daemon(self):
-        """Check if docker daemon is running"""
+        """Checks if the Docker daemon is running.
+
+        Raises:
+            DockerDaemonError: If the Docker daemon is not running.
+        """
         self.logger.info("Checking docker daemon")
+        cmd = ["docker", "info"]
+
+        self.logger.debug(BaseCodeExecutor.format_cmd(cmd, debug=True))
+
+        if self.dry_run:
+            self.console.print(
+                Syntax(BaseCodeExecutor.format_cmd(cmd), lexer="bash",
+                       theme="monokai"))
+            return
+
         try:
-            cmd = ["docker", "info"]
-
-            self.logger.debug(BaseCodeExecutor.format_cmd(cmd, debug=True))
-
-            if self.dry_run:
-                self.console.print(
-                    Syntax(BaseCodeExecutor.format_cmd(cmd), lexer="bash",
-                           theme="monokai"))
-                return
             proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
             _, stderr = proc.communicate()
             if proc.returncode == 0:
@@ -145,22 +132,41 @@ class BaseCodeExecutor(ABC):
             else:
                 self.logger.error("Docker daemon is not running")
                 self.logger.error(stderr)
-                raise ValueError("Docker daemon is not running")
+                raise DockerDaemonError("Docker daemon is not running")
 
-        except subprocess.CalledProcessError:
-            self.logger.error("Docker daemon is not running")
-            raise ValueError("Docker daemon is not running")
+        except subprocess.CalledProcessError as e:
+            self.logger.error(f"Docker daemon is not running: {e.stderr}")
+            raise CMDError(f"Docker daemon is not running: {e.with_traceback()}")
 
     def __enter__(self):
+        """Enters the context, creating the container and setting up cgroups.
+
+        Returns:
+            self: The BaseCodeExecutor instance.
+        """
+        if not self.lazy_container:
+            self._create_container()
+
+        self._check_cgroup_mount()
+        self._check_cgroup_controllers()
+        try:
+            self._check_cgroup_subtree_control()
+        except CgroupSubtreeControlError:
+            self._set_subtree_control()
+
         if not self.disable_compile:
             self._compile()
-        self._prepare_cgroup()
         return self
 
     def __exit__(self, exc_type, exc_val, exc_tb):
         self._cleanup_container()
 
     def _create_container(self):
+        """Creates a Docker container with the specified constraints.
+
+        Raises:
+            ContainerCreateError: If there is an error creating the container.
+        """
         self.logger.info("Creating container")
 
         # Build the docker command as a list
@@ -172,10 +178,11 @@ class BaseCodeExecutor(ABC):
             "--detach",
             "--mount",
             f"type=bind,source={self.src},target={self.working_dir_in_container}",
+            "--mount",
+            f"type=bind,source={self.cgroup_mount_path},target={self.cgroup_mount_path}",
+            "--cgroupns", "host",
             "--workdir", self.working_dir_in_container,
-            "--user", f"{self.user}",
-            "--cgroupns", "private",
-            "--privileged",
+            "--user", "0:0",  # Run as root (but we will run user code as non-root user)
             "--memory", f"{self.constraints['memory_limit'] + 100}m",
             "--memory-swap", f"{self.constraints['memory_limit'] + \
                                 self.constraints['memory_swap_limit'] + 100}m",
@@ -201,42 +208,243 @@ class BaseCodeExecutor(ABC):
             self.logger.info(f"Container created successfully: {self.container_id}")
         except subprocess.CalledProcessError as e:
             self.logger.error(f"Error creating container: {e.stderr}")
-            raise ValueError("Error creating container")
+            raise ContainerCreateError(f"Error creating container")
 
     def _cleanup_container(self):
-        self.logger.info(f"Stopping container")
+        """Cleans up the Docker container.
+
+        Raises:
+            ContainerCleanupError: If there is an error cleaning up the container.
+        """
+        self.logger.info(f"Cleaning up container: {self.container_name}")
+        # stop the container using the container id
         _cleanup_container_command = [
-            "docker", "stop", self.container_id
+            "docker", "container", "stop", self.container_id
         ]
 
         if self.dry_run:
+            # create a demo command for dry run using the container name
+            _cleanup_container_command_demo = [
+                "docker", "container", "stop", self.container_name
+            ]
             self.console.print(
                 Syntax(BaseCodeExecutor.format_cmd(
-                    _cleanup_container_command[:-1] + ["<container_id>"]),
+                    _cleanup_container_command_demo, debug=True),
                     "bash", theme="monokai"))
             return
-        if self.container_id:
-            self.logger.debug(
-                BaseCodeExecutor.format_cmd(_cleanup_container_command, debug=True))
-            subprocess.run(_cleanup_container_command)
+        try:
+            if self.container_id:
+                self.logger.debug(
+                    BaseCodeExecutor.format_cmd(_cleanup_container_command, debug=True))
+                subprocess.run(_cleanup_container_command)
+                self.logger.info(f"Container stopped successfully")
+        except subprocess.CalledProcessError as e:
+            self.logger.error(f"Error stopping container: {e.stderr}")
+            raise ContainerCleanupError("Error stopping container")
+
+    def _check_cgroup_mount(self):
+        """Check if cgroup2 is mounted.
+
+        Raises:
+            CgroupMountError: If cgroup is not mounted.
+        """
+        self.logger.info("Checking cgroup")
+        cgroup_command = [
+            "docker",
+            "exec",
+            self.container_name,
+            "bash",
+            "-c",
+            "mount | grep cgroup"
+        ]
+
+        self.logger.debug(BaseCodeExecutor.format_cmd(cgroup_command, debug=True))
+
+        if self.dry_run:
+            self.console.print(
+                Syntax(BaseCodeExecutor.format_cmd(cgroup_command), "bash",
+                       theme="monokai"))
+            return
+        try:
+            proc = subprocess.Popen(cgroup_command,
+                                    stdout=subprocess.PIPE,
+                                    stderr=subprocess.PIPE,
+                                    text=True)
+
+            stdout, _ = proc.communicate()
+            self.logger.debug(f"stdout: {stdout}")
+            if "cgroup2" in stdout:
+                self.logger.info("Cgroup exists")
+            else:
+                self.logger.error("Cgroup mount not found")
+                raise CgroupMountError("Cgroup mount not found")
+
+        except subprocess.CalledProcessError as e:
+            self.logger.error(f"Error checking cgroup: {e.stderr}")
+            raise CMDError(f"Error checking cgroup: {e.with_traceback()}")
+
+    def _check_cgroup_controllers(self):
+        """Check if the parent cgroup allows the required controllers (cpu, memory, etc.)
+
+        Raises:
+            CgroupControllerError: If the required controllers are not allowed.
+        """
+        self.logger.info("Checking cgroup controllers")
+        cgroup_command = [
+            "docker",
+            "exec",
+            self.container_name,
+            "bash",
+            "-c",
+            "cat /sys/fs/cgroup/cgroup.controllers"
+        ]
+
+        self.logger.debug(BaseCodeExecutor.format_cmd(cgroup_command, debug=True))
+
+        if self.dry_run:
+            self.console.print(
+                Syntax(BaseCodeExecutor.format_cmd(cgroup_command), "bash",
+                       theme="monokai"))
+            return
+
+        try:
+            proc = subprocess.Popen(cgroup_command,
+                                    stdout=subprocess.PIPE,
+                                    stderr=subprocess.PIPE,
+                                    text=True)
+
+            stdout, _ = proc.communicate()
+            self.logger.debug(f"stdout: {stdout}")
+            if "cpu" in stdout and "memory" in stdout:
+                self.logger.info("Required controllers are allowed")
+            else:
+                self.logger.error("Required controllers are not allowed")
+                raise CgroupControllerError("Required controllers are not allowed")
+
+        except subprocess.CalledProcessError as e:
+            self.logger.error(f"Error checking cgroup controllers: {e.stderr}")
+            raise CMDError(f"Error checking cgroup controllers: {e.with_traceback()}")
+
+    def _set_subtree_control(self):
+        """Set the required controllers in the cgroup subtree.
+
+        Raises:
+            CgroupSubtreeControlWriteError: If there is an error in setting the
+                                            required controllers in the cgroup subtree.
+        """
+        self.logger.info("Setting cgroup subtree control")
+        cgroup_command = [
+            "docker",
+            "exec",
+            self.container_name,
+            "bash",
+            "-c",
+            "echo '+cpu +memory' > /sys/fs/cgroup/cgroup.subtree_control"
+        ]
+
+        self.logger.debug(BaseCodeExecutor.format_cmd(cgroup_command, debug=True))
+
+        if self.dry_run:
+            self.console.print(
+                Syntax(BaseCodeExecutor.format_cmd(cgroup_command), "bash",
+                       theme="monokai"))
+            return
+
+        try:
+            proc = subprocess.Popen(cgroup_command,
+                                    stdout=subprocess.PIPE,
+                                    stderr=subprocess.PIPE,
+                                    text=True)
+
+            _, stderr = proc.communicate()
+            exit_code = proc.returncode
+            if exit_code == 0:
+                self.logger.info("Cgroup subtree control set successfully")
+            else:
+                self.logger.error("Error setting cgroup subtree control")
+                raise CgroupSubtreeControlWriteError(
+                    "Error setting cgroup subtree control")
+
+        except subprocess.CalledProcessError as e:
+            self.logger.error(f"Error setting cgroup subtree control: {e.stderr}")
+            raise CMDError(
+                f"Error setting cgroup subtree control: {e.with_traceback()}")
+
+    def _check_cgroup_subtree_control(self):
+        """Check if required controllers are allowed in the cgroup subtree.
+        If not allowed, set the required controllers in the cgroup subtree.
+
+        Raises:
+            CgroupSubtreeControlError: If the required controllers are not allowed.
+        """
+
+        self.logger.info("Checking cgroup subtree control")
+        cgroup_command = [
+            "docker",
+            "exec",
+            self.container_name,
+            "bash",
+            "-c",
+            "cat /sys/fs/cgroup/cgroup.subtree_control"
+        ]
+
+        self.logger.debug(BaseCodeExecutor.format_cmd(cgroup_command, debug=True))
+
+        if self.dry_run:
+            self.console.print(
+                Syntax(BaseCodeExecutor.format_cmd(cgroup_command), "bash",
+                       theme="monokai"))
+            # artificially raise an error
+            raise CgroupSubtreeControlError(
+                "Required controllers are not allowed in the cgroup subtree")
+
+        try:
+            proc = subprocess.Popen(cgroup_command,
+                                    stdout=subprocess.PIPE,
+                                    stderr=subprocess.PIPE,
+                                    text=True)
+
+            stdout, _ = proc.communicate()
+            self.logger.debug(f"stdout: {stdout}")
+            if "cpu" in stdout and "memory" in stdout:
+                self.logger.info(
+                    "Required controllers are allowed in the cgroup subtree")
+            else:
+                self.logger.error(
+                    "Required controllers are not allowed in the cgroup subtree")
+                raise CgroupSubtreeControlError(
+                    "Required controllers are not allowed in the cgroup subtree")
+
+        except subprocess.CalledProcessError as e:
+            self.logger.error(f"Error checking cgroup subtree control: {e.stderr}")
+            raise CMDError(
+                f"Error checking cgroup subtree control: {e.with_traceback()}")
 
     def _create_cgroup(self, identifier: str):
+        """Create a cgroup for the given identifier.
+
+        Args:
+            identifier (str): Identifier for the cgroup.
+
+        Raises:
+            CgroupCreateError: If there is an error creating the cgroup.
+        """
+
+        self.logger.info(f"Creating cgroup for {identifier}")
+        cgroup_command = [
+            "docker", "exec",
+            self.container_name,
+            "mkdir", f"/sys/fs/cgroup/{identifier}"
+        ]
+
+        self.logger.debug(BaseCodeExecutor.format_cmd(cgroup_command, debug=True))
+
+        if self.dry_run:
+            self.console.print(
+                Syntax(BaseCodeExecutor.format_cmd(cgroup_command), "bash",
+                       theme="monokai"))
+            return
         try:
-            self.logger.info(f"Creating cgroup for {identifier}")
-            cgroup_command = [
-                "docker", "exec",
-                self.container_name,
-                "mkdir", f"/sys/fs/cgroup/{identifier}"
-            ]
-
-            self.logger.debug(BaseCodeExecutor.format_cmd(cgroup_command, debug=True))
-
-            if self.dry_run:
-                self.console.print(
-                    Syntax(BaseCodeExecutor.format_cmd(cgroup_command), "bash",
-                           theme="monokai"))
-                return
-
             proc = subprocess.Popen(cgroup_command,
                                     stdout=subprocess.PIPE,
                                     stderr=subprocess.PIPE,
@@ -248,151 +456,90 @@ class BaseCodeExecutor(ABC):
             else:
                 self.logger.error(f"Error creating cgroup for {identifier}")
                 self.logger.error(stderr)
-                raise ValueError(f"Error creating cgroup for {identifier}")
+                raise CgroupCreateError(f"Error creating cgroup for {identifier}")
 
         except subprocess.CalledProcessError as e:
             self.logger.error(f"Error creating cgroup for {identifier}: {e.stderr}")
-            raise ValueError(f"Error creating cgroup for {identifier}")
+            raise CMDError(
+                f"Error creating cgroup for {identifier}: {e.with_traceback()}")
 
-    def _prepare_cgroup(self) -> None:
+    def _cleanup_cgroup(self, identifier: str):
+        """Clean up the cgroup for the given identifier.
+
+        Args:
+            identifier (str): Identifier for the cgroup.
+
+        Raises:
+            CgroupCleanupError: If there is an error cleaning up the cgroup.
         """
-        This method prepares the cgroup for the container.
-        There are several steps involved:
-        1. Check if cgroup exists (specifically cgroup v2)
-        2. Prepare the parent cgroup (for the container)
-        3. Move all the processes to the parent cgroup
-        4. Add cpu and memory to the subtree control at the root hierarchy
+        self.logger.info(f"Cleaning up cgroup for {identifier}")
+        cgroup_command = [
+            "docker", "exec",
+            self.container_name,
+            "rmdir", f"/sys/fs/cgroup/{identifier}"
+        ]
 
-        :return: None
-        """
+        self.logger.debug(BaseCodeExecutor.format_cmd(cgroup_command, debug=True))
 
+        if self.dry_run:
+            self.console.print(
+                Syntax(BaseCodeExecutor.format_cmd(cgroup_command), "bash",
+                       theme="monokai"))
+            return
         try:
-            # check if cgroup exists
-            self.logger.info("Checking if cgroup exists")
-            cgroup_command = [
-                "docker",
-                "exec",
-                self.container_name,
-                "bash",
-                "-c",
-                "mount | grep cgroup"
-            ]
-
-            self.logger.debug(BaseCodeExecutor.format_cmd(cgroup_command, debug=True))
-
-            if self.dry_run:
-                self.console.print(
-                    Syntax(BaseCodeExecutor.format_cmd(cgroup_command), "bash",
-                           theme="monokai"))
-                return
-
             proc = subprocess.Popen(cgroup_command,
                                     stdout=subprocess.PIPE,
                                     stderr=subprocess.PIPE,
                                     text=True)
-
-            stdout, _ = proc.communicate()
-            self.logger.debug(f"stdout: {stdout}")
-            if "cgroup2" in stdout:
-                self.logger.info("Cgroup exists")
-            else:
-                self.logger.error("Cgroup does not exist")
-                raise ValueError("Cgroup does not exist")
-
-        except subprocess.CalledProcessError as e:
-            self.logger.error(f"Error checking cgroup: {e.stderr}")
-            raise ValueError("Error checking cgroup")
-
-
-        try:
-            self._create_cgroup("parent")
-            self.logger.info("Preparing parent cgroup")
-            cgroup_command = [
-                "docker",
-                "exec",
-                self.container_name,
-                "bash", "-c",
-                "for pid in $(cat /sys/fs/cgroup/cgroup.procs); \
-                do echo $pid > /sys/fs/cgroup/parent/cgroup.procs 2> /dev/null; done; \
-                echo +cpu +memory > /sys/fs/cgroup/cgroup.subtree_control"
-            ]
-
-            self.logger.debug(BaseCodeExecutor.format_cmd(cgroup_command, debug=True))
-
-            if self.dry_run:
-                self.console.print(
-                    Syntax(BaseCodeExecutor.format_cmd(cgroup_command), "bash",
-                           theme="monokai"))
-                return
-
-            proc = subprocess.Popen(cgroup_command,
-                                    stdout=subprocess.PIPE,
-                                    stderr=subprocess.PIPE,
-                                    text=True)
-            stdout, stderr = proc.communicate()
-            self.logger.debug(f"stdout: {stdout}")
+            _, stderr = proc.communicate()
             exit_code = proc.returncode
             if exit_code == 0:
-                self.logger.info("Cgroup prepared successfully")
-
-                # cat /sys/fs/cgroup/cgroup.subtree_control
-                _cmd = [
-                    "docker",
-                    "exec",
-                    self.container_name,
-                    "cat", "/sys/fs/cgroup/cgroup.subtree_control"
-                ]
-                self.logger.debug(BaseCodeExecutor.format_cmd(_cmd, debug=True))
-                proc = subprocess.Popen(_cmd,
-                                        stdout=subprocess.PIPE,
-                                        stderr=subprocess.PIPE,
-                                        text=True)
-                stdout, stderr = proc.communicate()
-                self.logger.debug(f"stdout: {stdout}")
-
+                self.logger.info(f"Cgroup for {identifier} cleaned up successfully")
             else:
-                self.logger.error("Error preparing cgroup")
+                self.logger.error(f"Error cleaning up cgroup for {identifier}")
                 self.logger.error(stderr)
-                raise ValueError("Error preparing cgroup")
-
+                raise CgroupCleanupError(f"Error cleaning up cgroup for {identifier}")
 
         except subprocess.CalledProcessError as e:
-            self.logger.error(f"Error preparing cgroup: {e.stderr}")
-            raise ValueError("Error preparing cgroup")
+            self.logger.error(f"Error cleaning up cgroup for {identifier}: {e.stderr}")
+            raise CMDError(
+                f"Error cleaning up cgroup for {identifier}: {e.with_traceback()}")
 
     def _set_limits(self, identifier: str):
-        """
-        Set limits for the cgroup.
+        """Set limits for the cgroup.
 
-        :param identifier: Identifier for the cgroup
-        :return: None
+        Args:
+            identifier (str): Identifier for the cgroup.
+
+        Raises:
+            CgroupSetLimitsError: If there is an error setting the limits.
         """
+        self.logger.info(f"Setting limits for {identifier}")
+        memory_limit = self.constraints.get("memory_limit", 256)
+        time_limit = self.constraints.get("time_limit", 1)
+
+        memory_limit = memory_limit * 1024 * 1024  # Convert to bytes
+
+        cgroup_command = [
+            "docker", "exec",
+            self.container_name,
+            "bash", "-c",
+            f"echo {memory_limit} > /sys/fs/cgroup/{identifier}/memory.max",
+            "&&",
+            f"echo {self.constraints['memory_swap_limit']} > /sys/fs/cgroup/{identifier}/memory.swap.max",
+            "&&",
+            f"echo \"{self.constraints['cpu_quota']} {self.constraints['cpu_period']}\" > /sys/fs/cgroup/{identifier}/cpu.max",
+        ]
+
+        self.logger.debug(BaseCodeExecutor.format_cmd(cgroup_command, debug=True))
+
+        if self.dry_run:
+            self.console.print(
+                Syntax(BaseCodeExecutor.format_cmd(cgroup_command), "bash",
+                       theme="monokai"))
+            return
+
         try:
-            self.logger.info(f"Setting limits for {identifier}")
-            memory_limit = self.constraints.get("memory_limit", 256)
-            time_limit = self.constraints.get("time_limit", 1)
-
-            memory_limit = memory_limit * 1024 * 1024  # Convert to bytes
-
-            cgroup_command = [
-                "docker", "exec",
-                self.container_name,
-                "bash", "-c",
-                f"echo {memory_limit} > /sys/fs/cgroup/{identifier}/memory.max",
-                "&&",
-                f"echo {self.constraints['memory_swap_limit']} > /sys/fs/cgroup/{identifier}/memory.swap.max",
-                "&&",
-                f"echo \"{self.constraints['cpu_quota']} {self.constraints['cpu_period']}\" > /sys/fs/cgroup/{identifier}/cpu.max",
-            ]
-
-            self.logger.debug(BaseCodeExecutor.format_cmd(cgroup_command, debug=True))
-
-            if self.dry_run:
-                self.console.print(
-                    Syntax(BaseCodeExecutor.format_cmd(cgroup_command), "bash",
-                           theme="monokai"))
-                return
-
             proc = subprocess.Popen(cgroup_command,
                                     stdout=subprocess.PIPE,
                                     stderr=subprocess.PIPE,
@@ -404,11 +551,12 @@ class BaseCodeExecutor(ABC):
             else:
                 self.logger.error(f"Error setting limits for {identifier}")
                 self.logger.error(stderr)
-                raise ValueError(f"Error setting limits for {identifier}")
+                raise CgroupSetLimitsError(f"Error setting limits for {identifier}")
 
         except subprocess.CalledProcessError as e:
             self.logger.error(f"Error setting limits for {identifier}: {e.stderr}")
-            raise ValueError(f"Error setting limits for {identifier}")
+            raise CMDError(
+                f"Error setting limits for {identifier}: {e.with_traceback()}")
 
     @abstractmethod
     def get_compile_command(self, src: str) -> str:
@@ -441,45 +589,60 @@ class BaseCodeExecutor(ABC):
         """
 
         if self.disable_compile:
-            raise ValueError("Compilation is disabled")
-        self.logger.info(f"Compiling code")
-        compile_command = self.get_compile_command(self.working_dir_in_container)
-        cmd = [
-            "docker",
-            "exec",
-            "--workdir", self.working_dir_in_container,
-            self.container_name, "bash", "-c",
-            f"su - {self.non_root_user} -c '{compile_command}'"
-        ]
+            raise CompileError("Compilation is disabled")
 
-        self.logger.debug(BaseCodeExecutor.format_cmd(cmd, debug=True))
+        try:
+            self.logger.info(f"Compiling code")
+            compile_command = self.get_compile_command(self.working_dir_in_container)
+            cmd = [
+                "docker",
+                "exec",
+                "--workdir", self.working_dir_in_container,
+                self.container_name, "bash", "-c",
+                f"su - {self.user} -c '{compile_command}'"
+            ]
 
-        if self.dry_run:
-            self.console.print(
-                Syntax(BaseCodeExecutor.format_cmd(cmd), "bash", theme="monokai"))
-            return
+            self.logger.debug(BaseCodeExecutor.format_cmd(cmd, debug=True))
 
-        proc = subprocess.Popen(cmd,
-                                stdout=subprocess.PIPE,
-                                stderr=subprocess.PIPE,
-                                text=True)
+            if self.dry_run:
+                self.console.print(
+                    Syntax(BaseCodeExecutor.format_cmd(cmd), "bash", theme="monokai"))
+                return
 
-        stdout, stderr = proc.communicate()
-        exit_code = proc.returncode
-        if exit_code == 0:
-            self._is_compiled = True
-            self.logger.info("Compilation successful")
-        else:
-            self.logger.error("Compilation failed")
-        print(stdout)
-        print(stderr)
-        print(f'Exit code: {exit_code}')
+            proc = subprocess.Popen(cmd,
+                                    stdout=subprocess.PIPE,
+                                    stderr=subprocess.PIPE,
+                                    text=True)
 
-    def _get_stats(self, identifier: str):
+            stdout, stderr = proc.communicate()
+            exit_code = proc.returncode
+            self.logger.debug(f'Compile stdout: {stdout}')
+            self.logger.debug(f'Compile stderr: {stderr}')
+            self.logger.debug(f'Compile exit code: {exit_code}')
+
+            if exit_code == 0:
+                self._is_compiled = True
+                self.logger.info("Compilation successful")
+            else:
+                self.logger.error("Compilation failed")
+                raise CompileError(stderr)
+
+        except subprocess.CalledProcessError as e:
+            self.logger.error(f"Error compiling code: {e.stderr}")
+            raise CMDError(f"Error compiling code: {e.with_traceback()}")
+
+    def _get_memory_peak(self, identifier: str) -> int:
         """
-        Get the stats for the cgroup (memory peak, memory events, cpu stat).
-        :param identifier:
-        :return:
+        Get the memory stats for the cgroup (memory peak, memory events).
+
+        Args:
+            identifier: Identifier for the cgroup
+
+        Returns:
+            int: Memory peak in bytes
+
+        Raises:
+            CMDError: If there is an error in getting memory stats
         """
 
         memory_peak_cmd = [
@@ -494,11 +657,47 @@ class BaseCodeExecutor(ABC):
 
         if self.dry_run:
             self.console.print(
-                Syntax(BaseCodeExecutor.format_cmd(memory_peak_cmd), "bash", theme="monokai"))
+                Syntax(BaseCodeExecutor.format_cmd(memory_peak_cmd), "bash",
+                       theme="monokai"))
             return
 
-        memory_peak = subprocess.run(memory_peak_cmd, capture_output=True, text=True)
-        self.logger.debug(f"Memory peak: {memory_peak.stdout}")
+        try:
+            memory_peak = subprocess.Popen(memory_peak_cmd,
+                                           stdout=subprocess.PIPE,
+                                           stderr=subprocess.PIPE,
+                                           text=True)
+            stdout, stderr = memory_peak.communicate()
+            exit_code = memory_peak.returncode
+            self.logger.debug(f"Memory peak: {stdout}")
+            self.logger.debug(f"Memory peak stderr: {stderr}")
+            self.logger.debug(f"Memory peak exit code: {exit_code}")
+
+            if exit_code != 0:
+                raise MemoryPeakReadError(f"Error getting memory peak: {stderr}")
+
+            return int(stdout)
+
+        except OSError as e:
+            self.logger.error(f"Error getting memory peak: {e}")
+            raise CMDError(f"Error getting memory peak: {e.with_traceback()}")
+
+        except subprocess.SubprocessError as e:
+            self.logger.error(f"Error running subprocess: {e}")
+            raise CMDError(f"Error running subprocess: {e.with_traceback()}")
+
+    def _get_memory_events(self, identifier: str) -> MemoryEvents:
+        """
+        Get the memory events for the cgroup.
+
+        Args:
+            identifier: Identifier for the cgroup
+
+        Returns:
+            MemoryEvents: Memory events as a dictionary
+
+        Raises:
+            CMDError: If there is an error in getting memory events
+        """
 
         memory_events_cmd = [
             "docker",
@@ -508,8 +707,69 @@ class BaseCodeExecutor(ABC):
             f"cat /sys/fs/cgroup/{identifier}/memory.events"
         ]
 
-        memory_events = subprocess.run(memory_events_cmd, capture_output=True, text=True)
-        self.logger.info(f"Memory events: {memory_events.stdout}")
+        self.logger.debug(BaseCodeExecutor.format_cmd(memory_events_cmd, debug=True))
+
+        if self.dry_run:
+            self.console.print(
+                Syntax(BaseCodeExecutor.format_cmd(memory_events_cmd), "bash",
+                       theme="monokai"))
+            return
+
+        try:
+            memory_events = subprocess.Popen(memory_events_cmd,
+                                             stdout=subprocess.PIPE,
+                                             stderr=subprocess.PIPE,
+                                             text=True)
+            stdout, stderr = memory_events.communicate()
+            exit_code = memory_events.returncode
+            self.logger.debug(f"Memory events: {stdout}")
+            self.logger.debug(f"Memory events stderr: {stderr}")
+            self.logger.debug(f"Memory events exit code: {exit_code}")
+
+            if exit_code != 0:
+                raise MemoryEventsReadError(f"Error getting memory events: {stderr}")
+
+            _low = _high = _max = _oom = _oom_kill = _oom_group_kill = 0
+
+            for line in stdout.splitlines():
+                key, value = line.split()
+                if key == "low":
+                    _low = int(value)
+                elif key == "high":
+                    _high = int(value)
+                elif key == "max":
+                    _max = int(value)
+                elif key == "oom":
+                    _oom = int(value)
+                elif key == "oom_kill":
+                    _oom_kill = int(value)
+                elif key == "oom_group_kill":
+                    _oom_group_kill = int(value)
+
+            return MemoryEvents(low=_low, high=_high, max=_max, oom=_oom,
+                                oom_kill=_oom_kill, oom_group_kill=_oom_group_kill)
+        except OSError as e:
+            self.logger.error(f"Error getting memory events: {e}")
+            raise CMDError(f"Error getting memory events: {e.with_traceback()}")
+
+        except subprocess.SubprocessError as e:
+            self.logger.error(f"Error running subprocess: {e}")
+            raise CMDError(f"Error running subprocess: {e.with_traceback()}")
+
+    def _get_cpu_stat(self, identifier: str) -> CPUStat:
+        """
+        Get the CPU stats for the cgroup.
+
+        Args:
+            identifier: Identifier for the cgroup
+
+        Returns:
+            CPUStat: CPU stats as a dictionary
+
+        Raises:
+            CPUStatReadError: If there is an error in reading cpu.stat
+            CMDError: If there is an error in running the subprocess
+        """
 
         cpu_stat_cmd = [
             "docker",
@@ -519,47 +779,194 @@ class BaseCodeExecutor(ABC):
             f"cat /sys/fs/cgroup/{identifier}/cpu.stat"
         ]
 
-        cpu_stat = subprocess.run(cpu_stat_cmd, capture_output=True, text=True)
-        self.logger.info(f"CPU stat: {cpu_stat.stdout}")
+        self.logger.debug(BaseCodeExecutor.format_cmd(cpu_stat_cmd, debug=True))
+
+        if self.dry_run:
+            self.console.print(
+                Syntax(BaseCodeExecutor.format_cmd(cpu_stat_cmd), "bash",
+                       theme="monokai"))
+            return
+
+        try:
+            cpu_stat = subprocess.Popen(cpu_stat_cmd,
+                                        stdout=subprocess.PIPE,
+                                        stderr=subprocess.PIPE,
+                                        text=True)
+            stdout, stderr = cpu_stat.communicate()
+            exit_code = cpu_stat.returncode
+            self.logger.debug(f"CPU stat: {stdout}")
+            self.logger.debug(f"CPU stat stderr: {stderr}")
+            self.logger.debug(f"CPU stat exit code: {exit_code}")
+
+            if exit_code != 0:
+                raise CPUStatReadError(f"Error getting CPU stat: {stderr}")
+
+            usage_usec = user_usec = system_usec = nr_periods = nr_throttled = \
+                throttled_usec = nr_bursts = burst_usec = 0
+
+            for line in stdout.splitlines():
+                key, value = line.split()
+                if key == "usage_usec":
+                    usage_usec = int(value)
+                elif key == "user_usec":
+                    user_usec = int(value)
+                elif key == "system_usec":
+                    system_usec = int(value)
+                elif key == "nr_periods":
+                    nr_periods = int(value)
+                elif key == "nr_throttled":
+                    nr_throttled = int(value)
+                elif key == "throttled_usec":
+                    throttled_usec = int(value)
+                elif key == "nr_bursts":
+                    nr_bursts = int(value)
+                elif key == "burst_usec":
+                    burst_usec = int(value)
+
+            return CPUStat(usage_usec=usage_usec, user_usec=user_usec,
+                           system_usec=system_usec, nr_periods=nr_periods,
+                           nr_throttled=nr_throttled, throttled_usec=throttled_usec,
+                           nr_bursts=nr_bursts, burst_usec=burst_usec)
+
+        except OSError as e:
+            self.logger.error(f"Error getting CPU stat: {e}")
+            raise CMDError(f"Error getting CPU stat: {e.with_traceback()}")
+        except subprocess.SubprocessError as e:
+            self.logger.error(f"Error running subprocess: {e}")
+            raise CMDError(f"Error running subprocess: {e.with_traceback()}")
+
+    def _get_pids_peak(self, identifier: str) -> int:
+        """
+        Get the peak number of processes spawned by the cgroup.
+
+        Args:
+            identifier: Identifier for the cgroup
+
+        Returns:
+            int: Peak number of processes
+
+        Raises:
+            CMDError: If there is an error in getting the peak number of processes
+        """
+        pids_peak_cmd = [
+            "docker",
+            "exec",
+            self.container_name,
+            "bash", "-c",
+            f"cat /sys/fs/cgroup/{identifier}/pids.peak"
+        ]
+
+        self.logger.debug(BaseCodeExecutor.format_cmd(pids_peak_cmd, debug=True))
+
+        if self.dry_run:
+            self.console.print(
+                Syntax(BaseCodeExecutor.format_cmd(pids_peak_cmd), "bash",
+                       theme="monokai"))
+            return
+
+        try:
+            pids_peak = subprocess.Popen(pids_peak_cmd,
+                                         stdout=subprocess.PIPE,
+                                         stderr=subprocess.PIPE,
+                                         text=True)
+            stdout, stderr = pids_peak.communicate()
+            exit_code = pids_peak.returncode
+            self.logger.debug(f"Pids peak: {stdout}")
+            self.logger.debug(f"Pids peak stderr: {stderr}")
+            self.logger.debug(f"Pids peak exit code: {exit_code}")
+
+            if exit_code != 0:
+                raise PIDSPeakReadError(f"Error getting pids peak: {stderr}")
+
+            return int(stdout)
+
+        except OSError as e:
+            self.logger.error(f"Error getting pids peak: {e}")
+            raise CMDError(f"Error getting pids peak: {e.with_traceback()}")
+
+        except subprocess.SubprocessError as e:
+            self.logger.error(f"Error running subprocess: {e}")
+            raise CMDError(f"Error running subprocess: {e.with_traceback()}")
+
+    def _get_stats(self, identifier: str) -> Stats:
+        """
+        Get the stats for the cgroup (memory peak, memory events, cpu stat).
+
+        Args:
+            identifier: Identifier for the cgroup
+
+        Returns:
+            Stats: Stats as a dictionary
+        """
+
+        memory_peak = self._get_memory_peak(identifier)
+        memory_events = self._get_memory_events(identifier)
+        cpu_stat = self._get_cpu_stat(identifier)
+        pids_peak = self._get_pids_peak(identifier)
+
+        return Stats(memory_peak=memory_peak, memory_events=memory_events,
+                     cpu_stat=cpu_stat, pids_peak=pids_peak)
+
+    def _cleanup_actual_output(self, actual_output_file: str) -> None:
+        """
+        Clean up the actual output file.
+
+        Args:
+            actual_output_file: Path to the actual output file
+
+        Returns:
+            None
+        """
+        self.logger.info(f"Cleaning up actual output file: {actual_output_file}")
+        try:
+            os.remove(actual_output_file)
+            self.logger.info(f"Actual output file cleaned up successfully")
+        except OSError as e:
+            self.logger.error(f"Error cleaning up actual output file: {e}")
+            raise ActualOutputCleanupError(
+                f"Error cleaning up actual output file: {e.with_traceback()}")
 
     def _run(self,
-             test_case: int = 1,
-             input_file: str | None = None,
-             timeout: int | None = None
-             ) -> tuple[str, str, int]:
+             index: int,
+             input_file_on_host: str | None,
+             expected_output_file_on_host: str | None,
+             input_file_on_container: str | None,
+             expected_output_file_on_container: str | None,
+             actual_output_file: str | None,
+             timeout: int | None,
+             checker: str | None = None,
+             max_output_size: int = 1024 * 1024,  # 1 MB
+             read_chunk_size: int = 1024,  # 1 KB
+             ) -> TestResult:
         """
         Run a single test case with the provided run command (from `get_run_command`).
         This will be called for each test case.
-
-        :param test_case: Test case number
-        :param input_file: Input file for the test case (optional).
-                        By default, it will look for input/input{test_case}.txt
-        :param timeout: Timeout for running the command (from `get_run_command`).
-                        This will be used as a fallback mechanism.
-                        By default, it will be 5 times the time limit from constraints.
-        :return: Tuple of stdout, stderr, exit_code
+        TODO: Add Args
         """
+        cgroup_identifier = f"{self.id}_test{index}"
+        try:
+            self._create_cgroup(cgroup_identifier)
+        except CgroupCreateError as e:
+            raise e
 
-        self._create_cgroup(f"test{test_case}")
-        self._set_limits(f"test{test_case}")
+        try:
+            self._set_limits(cgroup_identifier)
+        except CgroupSetLimitsError as e:
+            raise e
 
-        self.logger.info(f"[Test {test_case}] Running")
+        self.logger.info(f"[Test {index}] Running")
         run_command = self.get_run_command(self.working_dir_in_container)
-
-        _input_file = f"{self.working_dir_in_container}/input/input{test_case}.txt"
-        if input_file:
-            _input_file = input_file
 
         if not timeout:
             timeout = self.constraints.get("time_limit", 1) * 5
 
-        cmd = f"timeout {timeout} {run_command} < {_input_file}"
+        cmd = f"timeout {timeout} {run_command} < {input_file_on_container}"
 
         docker_cmd = [
             "docker", "exec",
             "--workdir", self.working_dir_in_container,
             self.container_name, "bash", "-c",
-            f"echo $$ > /sys/fs/cgroup/test{test_case}/cgroup.procs && su - {self.non_root_user} -c '{cmd}'"
+            f"echo $$ > /sys/fs/cgroup/{cgroup_identifier}/cgroup.procs && su - {self.user} -c '{cmd}'"
         ]
 
         self.logger.debug(BaseCodeExecutor.format_cmd(docker_cmd, debug=True))
@@ -568,69 +975,226 @@ class BaseCodeExecutor(ABC):
             self.console.print(Syntax(BaseCodeExecutor.format_cmd(docker_cmd),
                                       "bash",
                                       theme="monokai"))
-            return "<stdout>", "<stderr>", 0
+            return TestResult()
 
-        self.logger.info(f"Running command: {' '.join(docker_cmd)}")
-        proc = subprocess.Popen(docker_cmd,
-                                stdout=subprocess.PIPE,
-                                stderr=subprocess.PIPE,
-                                text=True)
+        try:
+            total_output_size = 0
+            ole = False
+            with open(actual_output_file, "w") as f:
+                proc = subprocess.Popen(docker_cmd,
+                                        stdout=subprocess.PIPE,
+                                        stderr=subprocess.PIPE,
+                                        text=True)
 
-        stdout, stderr = proc.communicate()
-        exit_code = proc.returncode
+                for chunk in iter(lambda: proc.stdout.read(read_chunk_size), ''):
+                    total_output_size += len(chunk)
+                    if total_output_size > max_output_size:
+                        proc.kill()
+                        ole = True
+                    f.write(chunk)
+                proc.wait()
 
-        self.logger.info(f"Output: {stdout}")
-        self.logger.error(f"Error: {stderr}")
+                stderr = proc.stderr.read()
+                exit_code = proc.returncode
+                stats = self._get_stats(cgroup_identifier)
 
-        self.logger.info(f"Exit code: {exit_code}")
+                self.logger.debug(f"Error: {stderr}")
+                self.logger.debug(f"Exit code: {exit_code}")
+                self.logger.debug(f"Stats for test {index}: {stats}")
 
-        memory_peak_cmd = [
-            "docker",
-            "exec",
-            self.container_name,
-            "bash", "-c",
-            f"cat /sys/fs/cgroup/test{test_case}/memory.peak"
-        ]
+            if ole:
+                return TestResult(
+                    test_case=index,
+                    exit_code=exit_code,
+                    stats=stats,
+                    verdict=Verdict.OLE.name,
+                    verdict_label=Verdict.OLE.label,
+                    verdict_details=Verdict.OLE.details,
+                    input="",
+                    actual_output="",
+                    expected_output=""
+                )
 
-        memory_peak = subprocess.run(memory_peak_cmd, capture_output=True, text=True)
-        self.logger.info(f"Memory peak: {memory_peak.stdout}")
+            result = self._evaluate(index,
+                                    input_file_on_host,
+                                    expected_output_file_on_host,
+                                    actual_output_file,
+                                    stderr,
+                                    exit_code,
+                                    stats,
+                                    checker_executable_path=checker)
+            return result
 
-        memory_events_cmd = [
-            "docker",
-            "exec",
-            self.container_name,
-            "bash", "-c",
-            f"cat /sys/fs/cgroup/test{test_case}/memory.events"
-        ]
+        except subprocess.CalledProcessError as e:
+            self.logger.error(f"Error running command: {e.stderr}")
+            raise CMDError(f"Error running command: {e.with_traceback()}")
+        finally:
+            try:
+                self._cleanup_cgroup(cgroup_identifier)
+                self._cleanup_actual_output(actual_output_file)
+            except (CgroupCleanupError, ActualOutputCleanupError) as e:
+                self.logger.error(f"Error cleaning up: {e}")
+                raise e
 
-        memory_events = subprocess.run(memory_events_cmd, capture_output=True, text=True)
-        self.logger.info(f"Memory events: {memory_events.stdout}")
+    def _initialize_queue(self, shuffle: bool = False, input_prefix: str = "input",
+                          output_prefix: str = "output") -> deque[
+        tuple[int, str, str, str, str]]:
+        """Initialize the queue with the test cases.
 
-        cpu_stat_cmd = [
-            "docker",
-            "exec",
-            self.container_name,
-            "bash", "-c",
-            f"cat /sys/fs/cgroup/test{test_case}/cpu.stat"
-        ]
+        Args:
+            shuffle: If True, shuffle the test cases. Default: False
 
-        cpu_stat = subprocess.run(cpu_stat_cmd, capture_output=True, text=True)
-        self.logger.info(f"CPU stat: {cpu_stat.stdout}")
+        Returns:
+            deque: Queue of test cases as tuples of (test_idx, input_file, expected_output_file)
+        """
+        try:
+            self.logger.info("Initializing queue")
+            k = len(os.listdir(f"{self.src}/input"))
+            self.logger.info(f"Total test cases: {k}")
 
-        return stdout, stderr, exit_code
+            build_input_file_on_host = lambda \
+                    i: f"{self.src}/input/{input_prefix}{i}.txt"
+            build_input_file_on_container = lambda \
+                    i: f"{self.working_dir_in_container}/input/{input_prefix}{i}.txt"
+            build_output_file_on_host = lambda \
+                    i: f"{self.src}/output/{output_prefix}{i}.txt"
+            build_output_file_on_container = lambda \
+                    i: f"{self.working_dir_in_container}/output/{output_prefix}{i}.txt"
+
+            tests = [(i,
+                      build_input_file_on_host(i),
+                      build_output_file_on_host(i),
+                      build_input_file_on_container(i),
+                      build_output_file_on_container(i))
+                     for i in range(1, k + 1)]
+
+            if shuffle:
+                random.shuffle(tests)
+
+            return deque(tests)
+        except Exception as e:
+            self.logger.error(f"Error initializing test cases: {e}")
+            raise TestQueueInitializationError(
+                f"Error initializing test cases: {e.with_traceback()}")
+
+    def _evaluate(self,
+                  index: int,
+                  input_file: str,
+                  expected_output_file: str,
+                  actual_output_file: str,
+                  stderr: str,
+                  exit_code: int,
+                  stats: Stats,
+                  checker_executable_path: str | None) -> TestResult:
+        """
+        Evaluate the output of the code with the expected output.
+
+        Args:
+            TODO: Add Args
+
+        Returns:
+            TestResult: Test result object
+
+        """
+        self.logger.info(f"[Test {index}] Evaluating")
+
+        with open(input_file, "r") as f:
+            stdin = f.read()
+
+        with open(expected_output_file, "r") as f:
+            expected_output = f.read()
+
+        with open(actual_output_file, "r") as f:
+            actual_output = f.read()
+
+        def _build_test_result(verdict: Verdict) -> TestResult:
+            return TestResult(
+                test_case=index,
+                exit_code=exit_code,
+                stats=stats,
+                verdict=verdict.name,
+                verdict_label=verdict.label,
+                verdict_details=verdict.details,
+                input=stdin,
+                actual_output=actual_output,
+                expected_output=expected_output,
+            )
+
+        match exit_code:
+            case 0:
+                # Exit code 0 means the code ran successfully
+                # Check if the code ran within the time limit
+                if stats["cpu_stat"]["usage_usec"] > self.constraints[
+                    "time_limit"] * 1_000_000:
+                    return _build_test_result(Verdict.TLE)
+
+                if checker_executable_path:
+                    # Use the checker executable to compare the output
+                    cmd = [
+                        checker_executable_path,
+                        input_file,
+                        actual_output_file,
+                        expected_output_file
+                    ]
+                    try:
+                        proc = subprocess.run(cmd, capture_output=True, text=True)
+                        if proc.returncode == 0:
+                            return _build_test_result(Verdict.AC)
+                        else:
+                            return _build_test_result(Verdict.WA)
+                    except subprocess.CalledProcessError:
+                        return _build_test_result(Verdict.RE)
+                else:
+                    # Compare the output directly
+                    if actual_output.strip() == expected_output.strip():
+                        return _build_test_result(Verdict.AC)
+                    else:
+                        return _build_test_result(Verdict.WA)
+            case 2:
+                # Often caused by Misuse of shell builtins
+                return _build_test_result(Verdict.RE)
+            case 3:
+                # Often caused by Internal error (memory corruption, etc.)
+                return _build_test_result(Verdict.RE)
+            case 124:
+                # This is often caused by timeout
+                # This indicates Idleness Limit Exceeded (ILE)
+                return _build_test_result(Verdict.ILE)
+            case 137:
+                # Often caused by Out of Memory (OOM)
+                # Consider checking memory events
+                if stats["memory_events"]["oom"] > 0:
+                    return _build_test_result(Verdict.MLE)
+                else:
+                    return _build_test_result(Verdict.RE)
+            case 139:
+                # Often caused by Segmentation Fault (SIGSEGV)
+                # or Memory Error
+                return _build_test_result(Verdict.RE)
+            case _:
+                # Fall back to RE
+                return _build_test_result(Verdict.RE)
 
     def run(self,
             input_prefix: str = "input",
             output_prefix: str = "output",
-            timeout: int | None = None) -> Iterator[tuple[str, str, int]]:
+            shuffle: bool = False,
+            early_exit: bool = False,
+            checker: str | None = None,
+            timeout: int | None = None) -> Iterator[TestResult]:
         """
         Run all the test cases. This will yield the results for each test case.
-        All the test cases will be run in sequence as per the input and output files in
-        the `input` and `output` directories.
+        Order of the test cases can be shuffled by setting `shuffle` to True.
+        Default behavior is to run the test cases in order.
 
-        :param input_prefix: Prefix for the input files (default: input)
-        :param output_prefix: Prefix for the output files (default: output)
-        :param timeout: Optional timeout for running command for each test case.
+        Args:
+            input_prefix: Prefix for the input files (default: input)
+            output_prefix: Prefix for the output files (default: output)
+            shuffle: If True, shuffle the test cases. Default: False
+            early_exit: If True, tests will stop as soon as one of the tests fails.
+                        Default: False
+            checker: Path to the checker executable (if any)
+            timeout: Optional timeout for running command for each test case.
                         This timeout is not essentially the time limit for the code
                         execution. It is the time limit for running command
                         (e.g., `timeout 5 <command from get_run_command>`)
@@ -639,52 +1203,35 @@ class BaseCodeExecutor(ABC):
                         for the code execution otherwise the test cases will fail
                         prematurely.
 
-        :return: Iterator of tuples containing stdout, stderr, exit_code
+        Returns:
+            Iterator: Iterator of tuples containing stdout, stderr, exit_code
         """
-        tests = os.listdir(f"{self.src}/input")
+        tests = self._initialize_queue(input_prefix=input_prefix,
+                                       output_prefix=output_prefix,
+                                       shuffle=shuffle)
         self.logger.info(f"Running {len(tests)} tests")
-        for i in range(1, len(tests) + 1):
-            yield self._run(i,
-                            f"{self.working_dir_in_container}/input/{input_prefix}{i}.txt",
-                            timeout=timeout)
+        # Create a directory `actual` on host to store the actual output
+        actual_output_dir = f"{self.src}/actual"
+        os.makedirs(actual_output_dir, exist_ok=True)
+        ac_count = 0
+        k = len(tests)
+        while tests:
+            idx, input_file_on_host, expected_output_file_on_host, \
+                input_file_on_container, expected_output_file_on_container = tests.popleft()
+            actual_output_path = f"{actual_output_dir}/output{idx}.txt"
+            result = \
+                self._run(index=idx,
+                          input_file_on_host=input_file_on_host,
+                          expected_output_file_on_host=expected_output_file_on_host,
+                          input_file_on_container=input_file_on_container,
+                          expected_output_file_on_container=expected_output_file_on_container,
+                          actual_output_file=actual_output_path,
+                          timeout=timeout,
+                          checker=checker)
+            yield result
+            self.logger.info(f"[Test {idx}] verdict: {result['verdict']}")
+            if result["verdict"] != Verdict.AC.name and early_exit:
+                raise EarlyExitError(f"Test {idx} failed")
 
-
-class CPPCodeExecutor(BaseCodeExecutor):
-    def get_compile_command(self, src: str) -> str:
-        return f"g++ -o {src}/a.out {src}/main.cpp"
-
-    def get_run_command(self, src: str) -> str:
-        return f"{src}/a.out"
-
-
-if __name__ == "__main__":
-    constraints: Constraints = {
-        "time_limit": 2,
-        "memory_limit": 10,
-        "memory_swap_limit": 0,  # No swap
-        # Let's say we want to limit the CPU usage to 1 core (100%)
-        "cpu_quota": 1000000,
-        "cpu_period": 1000000,
-    }
-    with CPPCodeExecutor(
-            docker_image="cpp_image:v1",
-            user="root",
-            non_root_user="partho",
-            container_name="test",
-            src="/Users/parthokr/Documents/Projects/python-packages/base-code-executor/data/submission12",
-            constraints=constraints,
-            working_dir_in_container="/app",
-            disable_compile=False,
-            lazy_container=False,
-            early_exit=False,
-            dry_run=False,
-    ) as executor:
-        # executor.compile()
-        # executor.execute()
-        for result in executor.run():
-            stdout, stderr, exit_code = result
-            # stdout = stdout.strip()[0:100]
-            # stderr = stderr.strip()[0:100]
-            print(f"stdout: \n{stdout}")
-            print(f"stderr: \n{stderr}")
-            print(f"exit_code: {exit_code}")
+        if ac_count == k:
+            self.logger.info("All test cases passed")
