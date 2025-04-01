@@ -1,9 +1,9 @@
-## Arbiter
+## arbiterx
 
 
 ### Installation
 ```bash 
-pip install arbiter
+pip install arbiterx
 ```
 
 ### Directory structure of a test suite
@@ -29,7 +29,7 @@ import os
 
 from rich import print_json # not necessary, just for pretty printing
 
-from arbiter import CodeExecutor, Constraints
+from arbiterx import CodeExecutor, Constraints
 
 
 class PythonCodeExecutor(CodeExecutor):
@@ -67,7 +67,7 @@ if __name__ == "__main__":
 import json
 
 from rich import print_json
-from arbiter import CodeExecutor, Constraints
+from arbiterx import CodeExecutor, Constraints
 
 
 class CPPCodeExecutor(CodeExecutor):
@@ -154,7 +154,7 @@ This will print the logs in the console.
 | ILE     | Idleness Limit Exceeded    | The program did not produce any output for too long, often indicating an infinite loop that does not consume CPU time. |
 | JE      | Judgement Error            | The judgement process failed to produce a verdict. |
 
-See the `arbiter/verdicts.py` file for more details.
+See the `arbiterx/verdicts.py` file for more details.
 
 #### Exceptions
 | Exception                              | Description |
@@ -182,7 +182,7 @@ See the `arbiter/verdicts.py` file for more details.
 | `EarlyExitError`                       | Exception raised when the program exits earlier than expected. |
 | `ActualOutputCleanupError`             | Exception raised when there is an error in cleaning up the actual output. |
 
-See the `arbiter/exceptions.py` file for more details.
+See the `arbiterx/exceptions.py` file for more details.
 
 ### Some useful parameters
 - `disable_compile`: Disable compilation of the code. Useful when the code is already compiled or the code is in an interpreted language.
