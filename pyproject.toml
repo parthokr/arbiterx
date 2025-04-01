@@ -1,5 +1,5 @@
 [project]
-name = "base-code-executor"
+name = "arbiter"
 version = "0.1.0"
 description = ""
 authors = [
@@ -12,7 +12,7 @@ dependencies = [
 ]
 
 [tool.poetry]
-packages = [{include = "base_code_executor", from = "src"}]
+packages = [{include = "arbiter", from = "src"}]
 
 
 [build-system]

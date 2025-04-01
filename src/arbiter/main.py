@@ -10,7 +10,7 @@ from typing import Optional, Iterator
 from rich.console import Console
 from rich.syntax import Syntax
 
-from base_code_executor.exceptions import (CMDError, DockerDaemonError,
+from arbiter.exceptions import (CMDError, DockerDaemonError,
                                            ContainerCreateError, ContainerCleanupError,
                                            CgroupMountError, CgroupCreateError,
                                            CgroupCleanupError, CgroupControllerError,
@@ -21,13 +21,13 @@ from base_code_executor.exceptions import (CMDError, DockerDaemonError,
                                            MemoryPeakReadError, MemoryEventsReadError,
                                            CPUStatReadError, PIDSPeakReadError,
                                            ActualOutputCleanupError, EarlyExitError)
-from base_code_executor.logger import setup_logger
-from base_code_executor.types import Constraints, TestResult
-from base_code_executor.types import MemoryEvents, CPUStat, Stats
-from base_code_executor.verdicts import Verdict
+from arbiter.logger import setup_logger
+from arbiter.types import Constraints, TestResult
+from arbiter.types import MemoryEvents, CPUStat, Stats
+from arbiter.verdicts import Verdict
 
 
-class BaseCodeExecutor(ABC):
+class CodeExecutor(ABC):
     def __init__(
             self,
             docker_image: str,
@@ -117,11 +117,11 @@ class BaseCodeExecutor(ABC):
         self.logger.info("Checking docker daemon")
         cmd = ["docker", "info"]
 
-        self.logger.debug(BaseCodeExecutor.format_cmd(cmd, debug=True))
+        self.logger.debug(CodeExecutor.format_cmd(cmd, debug=True))
 
         if self.dry_run:
             self.console.print(
-                Syntax(BaseCodeExecutor.format_cmd(cmd), lexer="bash",
+                Syntax(CodeExecutor.format_cmd(cmd), lexer="bash",
                        theme="monokai"))
             return
 
@@ -143,7 +143,7 @@ class BaseCodeExecutor(ABC):
         """Enters the context, creating the container and setting up cgroups.
 
         Returns:
-            self: The BaseCodeExecutor instance.
+            self: The CodeExecutor instance.
         """
         if not self.lazy_container:
             self._create_container()
@@ -192,12 +192,12 @@ class BaseCodeExecutor(ABC):
             "sleep", "infinity"
         ]
 
-        self.logger.debug(BaseCodeExecutor.format_cmd(docker_command, debug=True))
+        self.logger.debug(CodeExecutor.format_cmd(docker_command, debug=True))
 
         if self.dry_run:
             # Print the command as a string for dry run
             self.console.print(
-                Syntax(BaseCodeExecutor.format_cmd(docker_command), "bash",
+                Syntax(CodeExecutor.format_cmd(docker_command), "bash",
                        theme="monokai"))
             return
 
@@ -229,14 +229,14 @@ class BaseCodeExecutor(ABC):
                 "docker", "container", "stop", self.container_name
             ]
             self.console.print(
-                Syntax(BaseCodeExecutor.format_cmd(
+                Syntax(CodeExecutor.format_cmd(
                     _cleanup_container_command_demo, debug=True),
                     "bash", theme="monokai"))
             return
         try:
             if self.container_id:
                 self.logger.debug(
-                    BaseCodeExecutor.format_cmd(_cleanup_container_command, debug=True))
+                    CodeExecutor.format_cmd(_cleanup_container_command, debug=True))
                 subprocess.run(_cleanup_container_command)
                 self.logger.info(f"Container stopped successfully")
         except subprocess.CalledProcessError as e:
@@ -259,11 +259,11 @@ class BaseCodeExecutor(ABC):
             "mount | grep cgroup"
         ]
 
-        self.logger.debug(BaseCodeExecutor.format_cmd(cgroup_command, debug=True))
+        self.logger.debug(CodeExecutor.format_cmd(cgroup_command, debug=True))
 
         if self.dry_run:
             self.console.print(
-                Syntax(BaseCodeExecutor.format_cmd(cgroup_command), "bash",
+                Syntax(CodeExecutor.format_cmd(cgroup_command), "bash",
                        theme="monokai"))
             return
         try:
@@ -300,11 +300,11 @@ class BaseCodeExecutor(ABC):
             "cat /sys/fs/cgroup/cgroup.controllers"
         ]
 
-        self.logger.debug(BaseCodeExecutor.format_cmd(cgroup_command, debug=True))
+        self.logger.debug(CodeExecutor.format_cmd(cgroup_command, debug=True))
 
         if self.dry_run:
             self.console.print(
-                Syntax(BaseCodeExecutor.format_cmd(cgroup_command), "bash",
+                Syntax(CodeExecutor.format_cmd(cgroup_command), "bash",
                        theme="monokai"))
             return
 
@@ -343,11 +343,11 @@ class BaseCodeExecutor(ABC):
             "echo '+cpu +memory' > /sys/fs/cgroup/cgroup.subtree_control"
         ]
 
-        self.logger.debug(BaseCodeExecutor.format_cmd(cgroup_command, debug=True))
+        self.logger.debug(CodeExecutor.format_cmd(cgroup_command, debug=True))
 
         if self.dry_run:
             self.console.print(
-                Syntax(BaseCodeExecutor.format_cmd(cgroup_command), "bash",
+                Syntax(CodeExecutor.format_cmd(cgroup_command), "bash",
                        theme="monokai"))
             return
 
@@ -389,11 +389,11 @@ class BaseCodeExecutor(ABC):
             "cat /sys/fs/cgroup/cgroup.subtree_control"
         ]
 
-        self.logger.debug(BaseCodeExecutor.format_cmd(cgroup_command, debug=True))
+        self.logger.debug(CodeExecutor.format_cmd(cgroup_command, debug=True))
 
         if self.dry_run:
             self.console.print(
-                Syntax(BaseCodeExecutor.format_cmd(cgroup_command), "bash",
+                Syntax(CodeExecutor.format_cmd(cgroup_command), "bash",
                        theme="monokai"))
             # artificially raise an error
             raise CgroupSubtreeControlError(
@@ -438,11 +438,11 @@ class BaseCodeExecutor(ABC):
             "mkdir", f"/sys/fs/cgroup/{identifier}"
         ]
 
-        self.logger.debug(BaseCodeExecutor.format_cmd(cgroup_command, debug=True))
+        self.logger.debug(CodeExecutor.format_cmd(cgroup_command, debug=True))
 
         if self.dry_run:
             self.console.print(
-                Syntax(BaseCodeExecutor.format_cmd(cgroup_command), "bash",
+                Syntax(CodeExecutor.format_cmd(cgroup_command), "bash",
                        theme="monokai"))
             return
         try:
@@ -480,11 +480,11 @@ class BaseCodeExecutor(ABC):
             "rmdir", f"/sys/fs/cgroup/{identifier}"
         ]
 
-        self.logger.debug(BaseCodeExecutor.format_cmd(cgroup_command, debug=True))
+        self.logger.debug(CodeExecutor.format_cmd(cgroup_command, debug=True))
 
         if self.dry_run:
             self.console.print(
-                Syntax(BaseCodeExecutor.format_cmd(cgroup_command), "bash",
+                Syntax(CodeExecutor.format_cmd(cgroup_command), "bash",
                        theme="monokai"))
             return
         try:
@@ -532,11 +532,11 @@ class BaseCodeExecutor(ABC):
             f"echo \"{self.constraints['cpu_quota']} {self.constraints['cpu_period']}\" > /sys/fs/cgroup/{identifier}/cpu.max",
         ]
 
-        self.logger.debug(BaseCodeExecutor.format_cmd(cgroup_command, debug=True))
+        self.logger.debug(CodeExecutor.format_cmd(cgroup_command, debug=True))
 
         if self.dry_run:
             self.console.print(
-                Syntax(BaseCodeExecutor.format_cmd(cgroup_command), "bash",
+                Syntax(CodeExecutor.format_cmd(cgroup_command), "bash",
                        theme="monokai"))
             return
 
@@ -603,11 +603,11 @@ class BaseCodeExecutor(ABC):
                 f"su - {self.user} -c '{compile_command}'"
             ]
 
-            self.logger.debug(BaseCodeExecutor.format_cmd(cmd, debug=True))
+            self.logger.debug(CodeExecutor.format_cmd(cmd, debug=True))
 
             if self.dry_run:
                 self.console.print(
-                    Syntax(BaseCodeExecutor.format_cmd(cmd), "bash", theme="monokai"))
+                    Syntax(CodeExecutor.format_cmd(cmd), "bash", theme="monokai"))
                 return
 
             proc = subprocess.Popen(cmd,
@@ -654,11 +654,11 @@ class BaseCodeExecutor(ABC):
             f"cat /sys/fs/cgroup/{identifier}/memory.peak"
         ]
 
-        self.logger.debug(BaseCodeExecutor.format_cmd(memory_peak_cmd, debug=True))
+        self.logger.debug(CodeExecutor.format_cmd(memory_peak_cmd, debug=True))
 
         if self.dry_run:
             self.console.print(
-                Syntax(BaseCodeExecutor.format_cmd(memory_peak_cmd), "bash",
+                Syntax(CodeExecutor.format_cmd(memory_peak_cmd), "bash",
                        theme="monokai"))
             return
 
@@ -708,11 +708,11 @@ class BaseCodeExecutor(ABC):
             f"cat /sys/fs/cgroup/{identifier}/memory.events"
         ]
 
-        self.logger.debug(BaseCodeExecutor.format_cmd(memory_events_cmd, debug=True))
+        self.logger.debug(CodeExecutor.format_cmd(memory_events_cmd, debug=True))
 
         if self.dry_run:
             self.console.print(
-                Syntax(BaseCodeExecutor.format_cmd(memory_events_cmd), "bash",
+                Syntax(CodeExecutor.format_cmd(memory_events_cmd), "bash",
                        theme="monokai"))
             return
 
@@ -780,11 +780,11 @@ class BaseCodeExecutor(ABC):
             f"cat /sys/fs/cgroup/{identifier}/cpu.stat"
         ]
 
-        self.logger.debug(BaseCodeExecutor.format_cmd(cpu_stat_cmd, debug=True))
+        self.logger.debug(CodeExecutor.format_cmd(cpu_stat_cmd, debug=True))
 
         if self.dry_run:
             self.console.print(
-                Syntax(BaseCodeExecutor.format_cmd(cpu_stat_cmd), "bash",
+                Syntax(CodeExecutor.format_cmd(cpu_stat_cmd), "bash",
                        theme="monokai"))
             return
 
@@ -857,11 +857,11 @@ class BaseCodeExecutor(ABC):
             f"cat /sys/fs/cgroup/{identifier}/pids.peak"
         ]
 
-        self.logger.debug(BaseCodeExecutor.format_cmd(pids_peak_cmd, debug=True))
+        self.logger.debug(CodeExecutor.format_cmd(pids_peak_cmd, debug=True))
 
         if self.dry_run:
             self.console.print(
-                Syntax(BaseCodeExecutor.format_cmd(pids_peak_cmd), "bash",
+                Syntax(CodeExecutor.format_cmd(pids_peak_cmd), "bash",
                        theme="monokai"))
             return
 
@@ -970,10 +970,10 @@ class BaseCodeExecutor(ABC):
             f"echo $$ > /sys/fs/cgroup/{cgroup_identifier}/cgroup.procs && su - {self.user} -c '{cmd}'"
         ]
 
-        self.logger.debug(BaseCodeExecutor.format_cmd(docker_cmd, debug=True))
+        self.logger.debug(CodeExecutor.format_cmd(docker_cmd, debug=True))
 
         if self.dry_run:
-            self.console.print(Syntax(BaseCodeExecutor.format_cmd(docker_cmd),
+            self.console.print(Syntax(CodeExecutor.format_cmd(docker_cmd),
                                       "bash",
                                       theme="monokai"))
             return TestResult()
