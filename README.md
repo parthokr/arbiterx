@@ -133,7 +133,7 @@ if __name__ == "__main__":
     "expected_output": "YES\nNO\nYES\n"
 }
 ```
-For more examples, refer to the `examples` directory.
+For more examples, refer to the [examples](https://github.com/parthokr/arbiterx/tree/main/examples) directory.
 
 ### Set log level
 ```bash
