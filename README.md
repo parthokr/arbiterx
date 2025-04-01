@@ -140,7 +140,7 @@ Some criteria may be different for different problems.
 * Criterion 2: Order of the output should not matter, e.g., `1 2 3` and `3 2 1` should be considered the same.
 * Criterion 3: Output may not be unique, e.g., for a problem where the output is a path from source to destination, there can be multiple paths.
 
-In such cases, we need a some middleware to transform the output to a common format that complies with the problem constraints while keeping the original output intact.
+In such cases, we need some middleware to transform the output to a common format that complies with the problem constraints while keeping the original output intact.
 
 In that case we can pass in our custom checker script by its path.
 Currently `arbiterx` only supports python scripts as custom checkers.
