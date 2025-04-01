@@ -10,9 +10,6 @@ RUN useradd sandbox -m -s /bin/bash
 # Install the required packages
 RUN apt-get update && apt-get install -y && \
     apt-get clean \
-    && rm -rf /var/lib/apt/lists/* \
-    && apt-get install -y build-essential \
-    && apt-get install -y cmake \
-    && apt-get install -y libboost-all-dev
+    && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
