@@ -10,7 +10,7 @@ from typing import Optional, Iterator
 from rich.console import Console
 from rich.syntax import Syntax
 
-from arbiter.exceptions import (CMDError, DockerDaemonError,
+from arbiterx.exceptions import (CMDError, DockerDaemonError,
                                            ContainerCreateError, ContainerCleanupError,
                                            CgroupMountError, CgroupCreateError,
                                            CgroupCleanupError, CgroupControllerError,
@@ -21,10 +21,10 @@ from arbiter.exceptions import (CMDError, DockerDaemonError,
                                            MemoryPeakReadError, MemoryEventsReadError,
                                            CPUStatReadError, PIDSPeakReadError,
                                            ActualOutputCleanupError, EarlyExitError)
-from arbiter.logger import setup_logger
-from arbiter.types import Constraints, TestResult
-from arbiter.types import MemoryEvents, CPUStat, Stats
-from arbiter.verdicts import Verdict
+from arbiterx.logger import setup_logger
+from arbiterx.types import Constraints, TestResult
+from arbiterx.types import MemoryEvents, CPUStat, Stats
+from arbiterx.verdicts import Verdict
 
 
 class CodeExecutor(ABC):

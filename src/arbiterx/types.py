@@ -1,6 +1,6 @@
 from typing import TypedDict
 
-from arbiter.verdicts import Verdict
+from arbiterx.verdicts import Verdict
 
 
 class Constraints(TypedDict):
