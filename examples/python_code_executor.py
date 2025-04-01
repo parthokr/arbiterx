@@ -23,11 +23,11 @@ if __name__ == "__main__":
         "cpu_quota": 1000000,
         "cpu_period": 1000000,
     }
-    WORK_DIR = "/Users/parthokr/Documents/Projects/python-packages/base-code-executor/"
+    WORK_DIR = os.path.join(os.getcwd(), "data", "python-submission")
     with PythonCodeExecutor(
             user="sandbox",
             docker_image="python312:v1",
-            src=os.path.join(WORK_DIR, "data/submission"),
+            src=os.path.join(WORK_DIR),
             constraints=constraints,
             disable_compile=True,
     ) as executor:
