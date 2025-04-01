@@ -266,7 +266,7 @@ with CPPCodeExecutor(..) as executor:
     for result in executor.run(shuffle=True):
         ...
 ```
-- `working_dir_in_container`: The working directory in the container. Default is `/sandbox`.
+- `working_dir_in_container`: The working directory in the container. Default is `/app`.
 ```python
 with CPPCodeExecutor(
         ...
