@@ -3,7 +3,7 @@ import os
 
 from rich import print_json
 
-from arbiter import CodeExecutor, Constraints
+from arbiterx import CodeExecutor, Constraints
 
 
 class PythonCodeExecutor(CodeExecutor):
