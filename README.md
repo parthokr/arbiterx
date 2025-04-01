@@ -133,7 +133,71 @@ if __name__ == "__main__":
     "expected_output": "YES\nNO\nYES\n"
 }
 ```
-For more examples, refer to the [examples](https://github.com/parthokr/arbiterx/tree/main/examples) directory.
+Sometimes we need custom checker as not all problems can have a predefined output.
+This makes sense when the expected output is not deterministic or the expected output is not unique.
+Some criteria may be different for different problems.
+* Criterion 1: The output should be case-insensitive, e.g., `YES` and `yes` should be considered the same.
+* Criterion 2: Order of the output should not matter, e.g., `1 2 3` and `3 2 1` should be considered the same.
+* Criterion 3: Output may not be unique, e.g., for a problem where the output is a path from source to destination, there can be multiple paths.
+
+In such cases, we need a some middleware to transform the output to a common format that complies with the problem constraints while keeping the original output intact.
+
+In that case we can pass in our custom checker script by its path.
+Currently `arbiterx` only supports python scripts as custom checkers.
+### An example demonstrating the use of custom checker
+
+---
+The custom checker is invoked with 3 arguments:
+- Argument 1: input file path
+- Argument 2: actual output file path
+- Argument 3: expected output file path
+
+The checker should exit with status code 0 if the output is correct, otherwise exit with status code 1.
+
+#### Create a custom checker script `custom_checker.py`
+```python
+#!/usr/bin/python3
+
+import sys
+
+input_file = sys.argv[1]
+output_file = sys.argv[2]
+expected_output_file = sys.argv[3]
+
+with open(output_file, "r") as f:
+    output = f.read().strip()
+
+with open(expected_output_file, "r") as f:
+    expected_output = f.read().strip()
+
+if output.upper() == expected_output:
+    sys.exit(0)
+else:
+    sys.exit(1)
+```
+Make sure to put the shebang at the top of the script.
+
+Then you should mark the script as executable.
+```bash
+chmod +x custom_checker.py
+```
+
+#### Now let's use the custom checker in the executor
+```python
+...
+    WORK_DIR = <submission_directory>
+    with PythonCodeExecutor(
+            user="sandbox",
+            docker_image="python312:v1",
+            src=os.path.join(WORK_DIR),
+            constraints=constraints,
+            disable_compile=True,
+    ) as executor:
+        for result in executor.run(checker=os.path.join(WORK_DIR, "custom_checker.py")):
+            print_json(json.dumps(result), indent=4)
+```
+
+For examples in detail, refer to the [examples](https://github.com/parthokr/arbiterx/tree/main/examples) directory.
 
 ### Set log level
 ```bash
