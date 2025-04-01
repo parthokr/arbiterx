@@ -1,5 +1,6 @@
 import os
 import random
+import shutil
 import subprocess
 import uuid
 from abc import ABC, abstractmethod
@@ -32,7 +33,7 @@ class BaseCodeExecutor(ABC):
             docker_image: str,
             src: str,
             constraints: Constraints,
-            working_dir_in_container: str,
+            working_dir_in_container: str = "/app",
             user: str = "nobody",
             cgroup_mount_path: str = "/sys/fs/cgroup",
             container_name: Optional[str] = uuid.uuid4().hex,
@@ -1179,7 +1180,7 @@ class BaseCodeExecutor(ABC):
             input_prefix: str = "input",
             output_prefix: str = "output",
             shuffle: bool = False,
-            early_exit: bool = False,
+            early_exit: bool = True,
             checker: str | None = None,
             timeout: int | None = None) -> Iterator[TestResult]:
         """
@@ -1211,27 +1212,40 @@ class BaseCodeExecutor(ABC):
                                        shuffle=shuffle)
         self.logger.info(f"Running {len(tests)} tests")
         # Create a directory `actual` on host to store the actual output
-        actual_output_dir = f"{self.src}/actual"
-        os.makedirs(actual_output_dir, exist_ok=True)
-        ac_count = 0
-        k = len(tests)
-        while tests:
-            idx, input_file_on_host, expected_output_file_on_host, \
-                input_file_on_container, expected_output_file_on_container = tests.popleft()
-            actual_output_path = f"{actual_output_dir}/output{idx}.txt"
-            result = \
-                self._run(index=idx,
-                          input_file_on_host=input_file_on_host,
-                          expected_output_file_on_host=expected_output_file_on_host,
-                          input_file_on_container=input_file_on_container,
-                          expected_output_file_on_container=expected_output_file_on_container,
-                          actual_output_file=actual_output_path,
-                          timeout=timeout,
-                          checker=checker)
-            yield result
-            self.logger.info(f"[Test {idx}] verdict: {result['verdict']}")
-            if result["verdict"] != Verdict.AC.name and early_exit:
-                raise EarlyExitError(f"Test {idx} failed")
+        try:
+            actual_output_dir = f"{self.src}/actual"
+            os.makedirs(actual_output_dir, exist_ok=True)
+            ac_count = 0
+            k = len(tests)
+            while tests:
+                idx, input_file_on_host, expected_output_file_on_host, \
+                    input_file_on_container, expected_output_file_on_container = tests.popleft()
+                actual_output_path = f"{actual_output_dir}/output{idx}.txt"
+                result = \
+                    self._run(index=idx,
+                              input_file_on_host=input_file_on_host,
+                              expected_output_file_on_host=expected_output_file_on_host,
+                              input_file_on_container=input_file_on_container,
+                              expected_output_file_on_container=expected_output_file_on_container,
+                              actual_output_file=actual_output_path,
+                              timeout=timeout,
+                              checker=checker)
+                yield result
+                self.logger.info(f"[Test {idx}] verdict: {result['verdict']}")
+                if result["verdict"] != Verdict.AC.name and early_exit:
+                    raise EarlyExitError(f"Test {idx} failed")
 
-        if ac_count == k:
-            self.logger.info("All test cases passed")
+            if ac_count == k:
+                self.logger.info("All test cases passed")
+        except Exception as e:
+            self.logger.error(f"Error running tests: {e}")
+            raise RuntimeError(f"Error running tests: {e.with_traceback()}")
+        finally:
+            # Remove the actual output directory
+            try:
+                shutil.rmtree(actual_output_dir)
+            except OSError as e:
+                self.logger.error(f"Error cleaning up actual output directory: {e}")
+                raise ActualOutputCleanupError(
+                    f"Error cleaning up actual output directory: {e.with_traceback()}")
+
