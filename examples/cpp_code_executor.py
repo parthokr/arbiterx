@@ -1,12 +1,14 @@
 import json
+import os
 
 from rich import print_json
+
 from arbiterx import CodeExecutor, Constraints
 
 
 class CPPCodeExecutor(CodeExecutor):
     def get_compile_command(self, src: str) -> str:
-        return f"g++ -o {src}/a.out {src}/main.cpp"
+        return f"g++ -o {src}/a.out {src}/solution.cpp"
 
     def get_run_command(self, src: str) -> str:
         return f"{src}/a.out"
@@ -21,17 +23,12 @@ if __name__ == "__main__":
         "cpu_quota": 1000000,
         "cpu_period": 1000000,
     }
+    WORK_DIR = os.path.join(os.getcwd(), "data", "cpp-submission")
     with CPPCodeExecutor(
             docker_image="cpp11:v1",
+            src=WORK_DIR,
             user="sandbox",
-            src="/Users/parthokr/Documents/Projects/python-packages/base-code-executor/data/submission12",
             constraints=constraints,
-            working_dir_in_container="/app",
-            disable_compile=False,
-            lazy_container=False,
-            early_exit=False,
-            dry_run=False,
     ) as executor:
         for result in executor.run(shuffle=True):
             print_json(json.dumps(result), indent=4)
-
