@@ -1,7 +1,7 @@
 def solve() -> None:
     n = int(input())
     if n & 1:
-        print("YeS")
+        print("YES")
     else:
         print("NO")
 
