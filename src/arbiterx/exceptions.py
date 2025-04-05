@@ -11,7 +11,6 @@ class DockerDaemonError(Exception):
     """
     pass
 
-
 class ContainerCreateError(Exception):
     """
     Exception raised when there is an error in creating the container.
@@ -32,6 +31,11 @@ class CgroupMountError(Exception):
     """
     pass
 
+class InvalidVolumeError(Exception):
+    """
+    Exception raised when the volume is invalid.
+    """
+    pass
 
 class CgroupCreateError(Exception):
     """
