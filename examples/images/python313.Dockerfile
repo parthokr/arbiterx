@@ -1,4 +1,4 @@
-# This is a demo image for Python 3.12 to run user code in a sandboxed environment.
+# This is a demo image for Python 3.13 to run user code in a sandboxed environment.
 FROM python:3.13-slim
 
 WORKDIR /app
