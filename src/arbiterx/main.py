@@ -5,22 +5,22 @@ import subprocess
 import uuid
 from abc import ABC, abstractmethod
 from collections import deque
-from typing import Optional, Iterator
+from typing import Literal, Optional, Iterator
 
 from rich.console import Console
 from rich.syntax import Syntax
 
 from arbiterx.exceptions import (CMDError, DockerDaemonError,
-                                           ContainerCreateError, ContainerCleanupError,
-                                           CgroupMountError, CgroupCreateError,
-                                           CgroupCleanupError, CgroupControllerError,
-                                           CgroupSubtreeControlError,
-                                           CgroupSubtreeControlWriteError,
-                                           CgroupSetLimitsError, CompileError,
-                                           TestQueueInitializationError,
-                                           MemoryPeakReadError, MemoryEventsReadError,
-                                           CPUStatReadError, PIDSPeakReadError,
-                                           ActualOutputCleanupError, EarlyExitError)
+                                 ContainerCreateError, ContainerCleanupError,
+                                 CgroupMountError, CgroupCreateError,
+                                 CgroupCleanupError, CgroupControllerError,
+                                 CgroupSubtreeControlError,
+                                 CgroupSubtreeControlWriteError,
+                                 CgroupSetLimitsError, CompileError, InvalidVolumeError,
+                                 TestQueueInitializationError,
+                                 MemoryPeakReadError, MemoryEventsReadError,
+                                 CPUStatReadError, PIDSPeakReadError,
+                                 ActualOutputCleanupError, EarlyExitError)
 from arbiterx.logger import setup_logger
 from arbiterx.types import Constraints, TestResult
 from arbiterx.types import MemoryEvents, CPUStat, Stats
@@ -33,6 +33,7 @@ class CodeExecutor(ABC):
             docker_image: str,
             src: str,
             constraints: Constraints,
+            volume: str | None = None,
             working_dir_in_container: str = "/app",
             user: str = "nobody",
             cgroup_mount_path: str = "/sys/fs/cgroup",
@@ -47,8 +48,18 @@ class CodeExecutor(ABC):
         Args:
             docker_image (str): Docker image to use for running the code
             src (str): Source code directory. Expected to have a source file,
-                        input and output directories.
+                        input and expected output directories.
+                        `src` will be mounted in the container at `working_dir_in_container`
+                        as a bind mount. This mount may be ignored if `volume` is set.
             constraints (Constraints): Constraints for the code execution.
+            volume (str | None): Docker volume where source and test files are stored.
+                                This may be used if `arbiterx` is intended to be run
+                                in a container. The volume will be mounted in the container
+                                for the image `docker_image` at `working_dir_in_container`.
+                                If test related files are at a different path in the container,
+                                you may specify the path using `src` argument.
+                                If set to None, the behavior is similar to the `src` argument.
+                                Defaults to None.
             working_dir_in_container (str): Working directory in the container.
             user (str, optional): Non-root user in the container to compile and
                                     run the code. Defaults to "nobody".
@@ -84,6 +95,7 @@ class CodeExecutor(ABC):
         self.user = user
         self.src = src
         self.constraints = constraints
+        self.volume = volume
         self.working_dir_in_container = working_dir_in_container
         self.cgroup_mount_path = cgroup_mount_path
         self.container_name = container_name
@@ -145,6 +157,9 @@ class CodeExecutor(ABC):
         Returns:
             self: The CodeExecutor instance.
         """
+        self.logger.debug("Entering context")
+        self._check_mount_type()
+
         if not self.lazy_container:
             self._create_container()
 
@@ -160,7 +175,30 @@ class CodeExecutor(ABC):
         return self
 
     def __exit__(self, exc_type, exc_val, exc_tb):
+        """Exits the context, cleaning up the container and cgroups.
+        Args:
+            exc_type: Exception type.
+            exc_val: Exception value.
+            exc_tb: Exception traceback.
+        """
+        self.logger.debug("Exiting context")
         self._cleanup_container()
+
+    def _check_mount_type(self):
+        if self.volume is None:
+            if not os.path.exists(self.src):
+                raise FileNotFoundError(f"Source directory {self.src} does not exist")
+            if not os.path.isdir(self.src):
+                raise NotADirectoryError(f"Source {self.src} is not a directory")
+            if not os.access(self.src, os.R_OK):
+                raise PermissionError(f"Source {self.src} is not readable")
+            if not os.access(self.src, os.W_OK):
+                raise PermissionError(f"Source {self.src} is not writable")
+        
+        if self.volume is not None:
+            if "/" in self.volume:
+                raise InvalidVolumeError("Volume name cannot contain '/'")
+
 
     def _create_container(self):
         """Creates a Docker container with the specified constraints.
@@ -178,7 +216,7 @@ class CodeExecutor(ABC):
             "--tty",
             "--detach",
             "--mount",
-            f"type=bind,source={self.src},target={self.working_dir_in_container}",
+            f"type=bind,source={self.src},target={self.working_dir_in_container}" if self.volume is None else f"type=volume,source={self.volume},target={self.working_dir_in_container}",
             "--mount",
             f"type=bind,source={self.cgroup_mount_path},target={self.cgroup_mount_path}",
             "--cgroupns", "host",
@@ -956,7 +994,7 @@ class CodeExecutor(ABC):
             raise e
 
         self.logger.info(f"[Test {index}] Running")
-        run_command = self.get_run_command(self.working_dir_in_container)
+        run_command = self.get_run_command(self._resolve_path("container"))
 
         if not timeout:
             timeout = self.constraints.get("time_limit", 1) * 5
@@ -1037,6 +1075,17 @@ class CodeExecutor(ABC):
                 self.logger.error(f"Error cleaning up: {e}")
                 raise e
 
+    def _resolve_path(self, where: Literal["host", "container"]) -> str:
+        match where:
+            case "host":
+                if self.volume is None:
+                    return self.src
+                return os.path.join("/home/app/submission_data", self.src)
+            case "container":
+                if self.volume is None:
+                    return self.working_dir_in_container
+                return os.path.join(self.working_dir_in_container, self.src)
+
     def _initialize_queue(self, shuffle: bool = False, input_prefix: str = "input",
                           output_prefix: str = "output") -> deque[
         tuple[int, str, str, str, str]]:
@@ -1050,17 +1099,17 @@ class CodeExecutor(ABC):
         """
         try:
             self.logger.info("Initializing queue")
-            k = len(os.listdir(f"{self.src}/input"))
+            k = len(os.listdir(f"{self._resolve_path('host')}/input"))
             self.logger.info(f"Total test cases: {k}")
 
             build_input_file_on_host = lambda \
-                    i: f"{self.src}/input/{input_prefix}{i}.txt"
+                    i: f"{self._resolve_path('host')}/input/{input_prefix}{i}.txt"
             build_input_file_on_container = lambda \
-                    i: f"{self.working_dir_in_container}/input/{input_prefix}{i}.txt"
+                    i: f"{self._resolve_path('container')}/input/{input_prefix}{i}.txt"
             build_output_file_on_host = lambda \
-                    i: f"{self.src}/output/{output_prefix}{i}.txt"
+                    i: f"{self._resolve_path('host')}/output/{output_prefix}{i}.txt"
             build_output_file_on_container = lambda \
-                    i: f"{self.working_dir_in_container}/output/{output_prefix}{i}.txt"
+                    i: f"{self._resolve_path('container')}/output/{output_prefix}{i}.txt"
 
             tests = [(i,
                       build_input_file_on_host(i),
@@ -1071,6 +1120,8 @@ class CodeExecutor(ABC):
 
             if shuffle:
                 random.shuffle(tests)
+
+            self.logger.debug(f"Tests: {tests}")
 
             return deque(tests)
         except Exception as e:
@@ -1248,4 +1299,3 @@ class CodeExecutor(ABC):
                 self.logger.error(f"Error cleaning up actual output directory: {e}")
                 raise ActualOutputCleanupError(
                     f"Error cleaning up actual output directory: {e.with_traceback()}")
-
