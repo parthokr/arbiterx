@@ -11,6 +11,7 @@ class DockerDaemonError(Exception):
     """
     pass
 
+
 class ContainerCreateError(Exception):
     """
     Exception raised when there is an error in creating the container.
@@ -31,11 +32,6 @@ class CgroupMountError(Exception):
     """
     pass
 
-class InvalidVolumeError(Exception):
-    """
-    Exception raised when the volume is invalid.
-    """
-    pass
 
 class CgroupCreateError(Exception):
     """
@@ -105,25 +101,49 @@ class CompileError(Exception):
 
 
 class RunError(Exception):
+    """
+    Exception raised when there is an error in running the code.
+    """
     pass
 
 class TestQueueInitializationError(Exception):
+    """
+    Exception raised when there is an error in initializing the test queue.
+    """
     pass
 
 class MemoryPeakReadError(Exception):
+    """
+    Exception raised when there is an error in reading the `memory.peak` file.
+    """
     pass
 
 class MemoryEventsReadError(Exception):
+    """
+    Exception raised when there is an error in reading the `memory.events` file.
+    """
     pass
 
 class CPUStatReadError(Exception):
+    """
+    Exception raised when there is an error in reading the `cpustat` file.
+    """
     pass
 
 class PIDSPeakReadError(Exception):
+    """
+    Exception raised when there is an error in reading the `pid` file.
+    """
     pass
 
 class EarlyExitError(Exception):
+    """
+    Exception raised when there is an error in executing an Early Exit command.
+    """
     pass
 
 class ActualOutputCleanupError(Exception):
+    """
+    Exception raised when there is an error in cleaning up the actual output.
+    """
     pass

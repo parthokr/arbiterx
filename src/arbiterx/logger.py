@@ -26,7 +26,14 @@ def setup_logger(name: str, level: str, log_file: Optional[str] = None):
     console_handler.setLevel(log_level)
 
     logger.addHandler(console_handler)
-
+ """
+ If log_file is provided:
+Creates a logging.FileHandler to write logs to the specified file.
+Sets the file handler's level.
+Sets the file handler's formatter.
+Adds the file handler to the logger.
+Returns the configured logger.
+ """
     if log_file:
         file_handler = logging.FileHandler(log_file)
         file_handler.setLevel(log_level)
