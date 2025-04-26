@@ -34,6 +34,7 @@ class CodeExecutor(ABC):
             src: str,
             constraints: Constraints,
             volume: str | None = None,
+            src_in_volume: str | None = None,
             working_dir_in_container: str = "/app",
             user: str = "nobody",
             cgroup_mount_path: str = "/sys/fs/cgroup",
@@ -50,15 +51,16 @@ class CodeExecutor(ABC):
             src (str): Source code directory. Expected to have a source file,
                         input and expected output directories.
                         `src` will be mounted in the container at `working_dir_in_container`
-                        as a bind mount. This mount may be ignored if `volume` is set.
+                        as a bind mount. 
             constraints (Constraints): Constraints for the code execution.
             volume (str | None): Docker volume where source and test files are stored.
                                 This may be used if `arbiterx` is intended to be run
                                 in a container. The volume will be mounted in the container
                                 for the image `docker_image` at `working_dir_in_container`.
-                                If test related files are at a different path in the container,
-                                you may specify the path using `src` argument.
-                                If set to None, the behavior is similar to the `src` argument.
+                                Defaults to None.
+            src_in_volume (str | None): Path to the test relaetd files in the volume.
+                                If you have no volume specified, then skip this.
+                                Otherwise an error may be raised.
                                 Defaults to None.
             working_dir_in_container (str): Working directory in the container.
             user (str, optional): Non-root user in the container to compile and
@@ -87,7 +89,7 @@ class CodeExecutor(ABC):
             {'=' * 30}[/bold red]")
 
         log_level = os.environ.get("LOG_LEVEL", "INFO")
-        self.logger = setup_logger(self.__class__.__name__, log_level)
+        self.logger = setup_logger("arbiterx", log_level)
 
         self._check_docker_daemon()
 
@@ -96,6 +98,7 @@ class CodeExecutor(ABC):
         self.src = src
         self.constraints = constraints
         self.volume = volume
+        self.src_in_volume = src_in_volume
         self.working_dir_in_container = working_dir_in_container
         self.cgroup_mount_path = cgroup_mount_path
         self.container_name = container_name
@@ -149,7 +152,7 @@ class CodeExecutor(ABC):
 
         except subprocess.CalledProcessError as e:
             self.logger.error(f"Docker daemon is not running: {e.stderr}")
-            raise CMDError(f"Docker daemon is not running: {e.with_traceback()}")
+            raise CMDError(f"Docker daemon is not running: {e.with_traceback(e.__traceback__)}")
 
     def __enter__(self):
         """Enters the context, creating the container and setting up cgroups.
@@ -320,7 +323,7 @@ class CodeExecutor(ABC):
 
         except subprocess.CalledProcessError as e:
             self.logger.error(f"Error checking cgroup: {e.stderr}")
-            raise CMDError(f"Error checking cgroup: {e.with_traceback()}")
+            raise CMDError(f"Error checking cgroup: {e.with_traceback(e.__traceback__)}")
 
     def _check_cgroup_controllers(self):
         """Check if the parent cgroup allows the required controllers (cpu, memory, etc.)
@@ -362,7 +365,7 @@ class CodeExecutor(ABC):
 
         except subprocess.CalledProcessError as e:
             self.logger.error(f"Error checking cgroup controllers: {e.stderr}")
-            raise CMDError(f"Error checking cgroup controllers: {e.with_traceback()}")
+            raise CMDError(f"Error checking cgroup controllers: {e.with_traceback(e.__traceback__)}")
 
     def _set_subtree_control(self):
         """Set the required controllers in the cgroup subtree.
@@ -407,7 +410,7 @@ class CodeExecutor(ABC):
         except subprocess.CalledProcessError as e:
             self.logger.error(f"Error setting cgroup subtree control: {e.stderr}")
             raise CMDError(
-                f"Error setting cgroup subtree control: {e.with_traceback()}")
+                f"Error setting cgroup subtree control: {e.with_traceback(e.__traceback__)}")
 
     def _check_cgroup_subtree_control(self):
         """Check if required controllers are allowed in the cgroup subtree.
@@ -457,7 +460,7 @@ class CodeExecutor(ABC):
         except subprocess.CalledProcessError as e:
             self.logger.error(f"Error checking cgroup subtree control: {e.stderr}")
             raise CMDError(
-                f"Error checking cgroup subtree control: {e.with_traceback()}")
+                f"Error checking cgroup subtree control: {e.with_traceback(e.__traceback__)}")
 
     def _create_cgroup(self, identifier: str):
         """Create a cgroup for the given identifier.
@@ -500,7 +503,7 @@ class CodeExecutor(ABC):
         except subprocess.CalledProcessError as e:
             self.logger.error(f"Error creating cgroup for {identifier}: {e.stderr}")
             raise CMDError(
-                f"Error creating cgroup for {identifier}: {e.with_traceback()}")
+                f"Error creating cgroup for {identifier}: {e.with_traceback(e.__traceback__)}")
 
     def _cleanup_cgroup(self, identifier: str):
         """Clean up the cgroup for the given identifier.
@@ -542,7 +545,7 @@ class CodeExecutor(ABC):
         except subprocess.CalledProcessError as e:
             self.logger.error(f"Error cleaning up cgroup for {identifier}: {e.stderr}")
             raise CMDError(
-                f"Error cleaning up cgroup for {identifier}: {e.with_traceback()}")
+                f"Error cleaning up cgroup for {identifier}: {e.with_traceback(e.__traceback__)}")
 
     def _set_limits(self, identifier: str):
         """Set limits for the cgroup.
@@ -595,7 +598,7 @@ class CodeExecutor(ABC):
         except subprocess.CalledProcessError as e:
             self.logger.error(f"Error setting limits for {identifier}: {e.stderr}")
             raise CMDError(
-                f"Error setting limits for {identifier}: {e.with_traceback()}")
+                f"Error setting limits for {identifier}: {e.with_traceback(e.__traceback__)}")
 
     @abstractmethod
     def get_compile_command(self, src: str) -> str:
@@ -668,7 +671,7 @@ class CodeExecutor(ABC):
 
         except subprocess.CalledProcessError as e:
             self.logger.error(f"Error compiling code: {e.stderr}")
-            raise CMDError(f"Error compiling code: {e.with_traceback()}")
+            raise CMDError(f"Error compiling code: {e.with_traceback(e.__traceback__)}")
 
     def _get_memory_peak(self, identifier: str) -> int:
         """
@@ -718,11 +721,11 @@ class CodeExecutor(ABC):
 
         except OSError as e:
             self.logger.error(f"Error getting memory peak: {e}")
-            raise CMDError(f"Error getting memory peak: {e.with_traceback()}")
+            raise CMDError(f"Error getting memory peak: {e.with_traceback(e.__traceback__)}")
 
         except subprocess.SubprocessError as e:
             self.logger.error(f"Error running subprocess: {e}")
-            raise CMDError(f"Error running subprocess: {e.with_traceback()}")
+            raise CMDError(f"Error running subprocess: {e.with_traceback(e.__traceback__)}")
 
     def _get_memory_events(self, identifier: str) -> MemoryEvents:
         """
@@ -789,11 +792,11 @@ class CodeExecutor(ABC):
                                 oom_kill=_oom_kill, oom_group_kill=_oom_group_kill)
         except OSError as e:
             self.logger.error(f"Error getting memory events: {e}")
-            raise CMDError(f"Error getting memory events: {e.with_traceback()}")
+            raise CMDError(f"Error getting memory events: {e.with_traceback(e.__traceback__)}")
 
         except subprocess.SubprocessError as e:
             self.logger.error(f"Error running subprocess: {e}")
-            raise CMDError(f"Error running subprocess: {e.with_traceback()}")
+            raise CMDError(f"Error running subprocess: {e.with_traceback(e.__traceback__)}")
 
     def _get_cpu_stat(self, identifier: str) -> CPUStat:
         """
@@ -869,10 +872,10 @@ class CodeExecutor(ABC):
 
         except OSError as e:
             self.logger.error(f"Error getting CPU stat: {e}")
-            raise CMDError(f"Error getting CPU stat: {e.with_traceback()}")
+            raise CMDError(f"Error getting CPU stat: {e.with_traceback(e.__traceback__)}")
         except subprocess.SubprocessError as e:
             self.logger.error(f"Error running subprocess: {e}")
-            raise CMDError(f"Error running subprocess: {e.with_traceback()}")
+            raise CMDError(f"Error running subprocess: {e.with_traceback(e.__traceback__)}")
 
     def _get_pids_peak(self, identifier: str) -> int:
         """
@@ -921,11 +924,11 @@ class CodeExecutor(ABC):
 
         except OSError as e:
             self.logger.error(f"Error getting pids peak: {e}")
-            raise CMDError(f"Error getting pids peak: {e.with_traceback()}")
+            raise CMDError(f"Error getting pids peak: {e.with_traceback(e.__traceback__)}")
 
         except subprocess.SubprocessError as e:
             self.logger.error(f"Error running subprocess: {e}")
-            raise CMDError(f"Error running subprocess: {e.with_traceback()}")
+            raise CMDError(f"Error running subprocess: {e.with_traceback(e.__traceback__)}")
 
     def _get_stats(self, identifier: str) -> Stats:
         """
@@ -963,7 +966,7 @@ class CodeExecutor(ABC):
         except OSError as e:
             self.logger.error(f"Error cleaning up actual output file: {e}")
             raise ActualOutputCleanupError(
-                f"Error cleaning up actual output file: {e.with_traceback()}")
+                f"Error cleaning up actual output file: {e.with_traceback(e.__traceback__)}")
 
     def _run(self,
              index: int,
@@ -1014,7 +1017,9 @@ class CodeExecutor(ABC):
             self.console.print(Syntax(CodeExecutor.format_cmd(docker_cmd),
                                       "bash",
                                       theme="monokai"))
-            return TestResult()
+            return TestResult(
+                verdict=Verdict.AC.name
+            )
 
         try:
             total_output_size = 0
@@ -1066,7 +1071,7 @@ class CodeExecutor(ABC):
 
         except subprocess.CalledProcessError as e:
             self.logger.error(f"Error running command: {e.stderr}")
-            raise CMDError(f"Error running command: {e.with_traceback()}")
+            raise CMDError(f"Error running command: {e.with_traceback(e.__traceback__)}")
         finally:
             try:
                 self._cleanup_cgroup(cgroup_identifier)
@@ -1078,13 +1083,13 @@ class CodeExecutor(ABC):
     def _resolve_path(self, where: Literal["host", "container"]) -> str:
         match where:
             case "host":
-                if self.volume is None:
-                    return self.src
-                return os.path.join("/home/app/submission_data", self.src)
+                return self.src
             case "container":
                 if self.volume is None:
                     return self.working_dir_in_container
-                return os.path.join(self.working_dir_in_container, self.src)
+                if self.src_in_volume:
+                    return os.path.join(self.working_dir_in_container, self.src_in_volume)
+                return self.working_dir_in_container
 
     def _initialize_queue(self, shuffle: bool = False, input_prefix: str = "input",
                           output_prefix: str = "output") -> deque[
@@ -1127,7 +1132,7 @@ class CodeExecutor(ABC):
         except Exception as e:
             self.logger.error(f"Error initializing test cases: {e}")
             raise TestQueueInitializationError(
-                f"Error initializing test cases: {e.with_traceback()}")
+                f"Error initializing test cases: {e.with_traceback(e.__traceback__)}")
 
     def _evaluate(self,
                   index: int,
@@ -1183,7 +1188,7 @@ class CodeExecutor(ABC):
                 if checker_executable_path:
                     # Use the checker executable to compare the output
                     cmd = [
-                        checker_executable_path,
+                        os.path.join(self._resolve_path("host"), checker_executable_path),
                         input_file,
                         actual_output_file,
                         expected_output_file
@@ -1288,9 +1293,12 @@ class CodeExecutor(ABC):
 
             if ac_count == k:
                 self.logger.info("All test cases passed")
+        except EarlyExitError as e:
+            self.logger.error(f"Early exit: {e}")
+            raise e
         except Exception as e:
             self.logger.error(f"Error running tests: {e}")
-            raise RuntimeError(f"Error running tests: {e.with_traceback()}")
+            raise RuntimeError(f"Error running tests: {e.with_traceback(e.__traceback__)}")
         finally:
             # Remove the actual output directory
             try:
@@ -1298,4 +1306,4 @@ class CodeExecutor(ABC):
             except OSError as e:
                 self.logger.error(f"Error cleaning up actual output directory: {e}")
                 raise ActualOutputCleanupError(
-                    f"Error cleaning up actual output directory: {e.with_traceback()}")
+                    f"Error cleaning up actual output directory: {e.with_traceback(e.__traceback__)}")
