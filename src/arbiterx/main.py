@@ -42,6 +42,7 @@ class CodeExecutor(ABC):
             disable_compile: bool = False,
             lazy_container: bool = False,
             dry_run: bool = False,
+            log_file: str | None = None,
     ):
         """
         Base class for code execution
@@ -89,7 +90,7 @@ class CodeExecutor(ABC):
             {'=' * 30}[/bold red]")
 
         log_level = os.environ.get("LOG_LEVEL", "INFO")
-        self.logger = setup_logger("arbiterx", log_level)
+        self.logger = setup_logger("arbiterx", log_level, log_file)
 
         self._check_docker_daemon()
 
@@ -566,10 +567,8 @@ class CodeExecutor(ABC):
             "docker", "exec",
             self.container_name,
             "bash", "-c",
-            f"echo {memory_limit} > /sys/fs/cgroup/{identifier}/memory.max",
-            "&&",
-            f"echo {self.constraints['memory_swap_limit']} > /sys/fs/cgroup/{identifier}/memory.swap.max",
-            "&&",
+            f"echo {memory_limit} > /sys/fs/cgroup/{identifier}/memory.max && "+
+            f"echo {self.constraints['memory_swap_limit']} > /sys/fs/cgroup/{identifier}/memory.swap.max && "+
             f"echo \"{self.constraints['cpu_quota']} {self.constraints['cpu_period']}\" > /sys/fs/cgroup/{identifier}/cpu.max",
         ]
 
