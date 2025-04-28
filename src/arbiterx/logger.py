@@ -65,19 +65,19 @@ def setup_logger(
         datefmt=date_format
     )
     
-    # Rich handler for console output
-    console_handler = RichHandler(
-        rich_tracebacks=True,
-        show_time=True,
-        show_level=True,
-        show_path=True,
-        markup=True,
-        log_time_format=date_format
-    )
-    console_handler.setLevel(log_level)
-    console_formatter = logging.Formatter(LoggerConfig.RICH_FORMAT)
-    console_handler.setFormatter(console_formatter)
-    logger.addHandler(console_handler)
+    # # Rich handler for console output
+    # console_handler = RichHandler(
+    #     rich_tracebacks=True,
+    #     show_time=True,
+    #     show_level=True,
+    #     show_path=True,
+    #     markup=True,
+    #     log_time_format=date_format
+    # )
+    # console_handler.setLevel(log_level)
+    # console_formatter = logging.Formatter(LoggerConfig.RICH_FORMAT)
+    # console_handler.setFormatter(console_formatter)
+    # logger.addHandler(console_handler)
     
     # Add file handler if specified
     if log_file:
@@ -98,6 +98,19 @@ def setup_logger(
         file_handler.setLevel(log_level)
         file_handler.setFormatter(file_formatter)
         logger.addHandler(file_handler)
+    else:
+        console_handler = RichHandler(
+            rich_tracebacks=True,
+            show_time=True,
+            show_level=True,
+            show_path=True,
+            markup=True,
+            log_time_format=date_format
+        )
+        console_handler.setLevel(log_level)
+        console_formatter = logging.Formatter(LoggerConfig.RICH_FORMAT)
+        console_handler.setFormatter(console_formatter)
+        logger.addHandler(console_handler)
     
     # Add any extra handlers
     if extra_handlers:
